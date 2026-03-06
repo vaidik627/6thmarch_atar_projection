@@ -75,14 +75,14 @@ EXTRACTION_SCHEMA = {
     "adjustments_fy1": "One-time/non-recurring items for earliest fiscal year (in $000s).",
     "adjustments_fy2": "One-time adjustments for middle fiscal year (in $000s).",
     "adjustments_fy3": "One-time adjustments for most recent fiscal year (in $000s).",
-    "adj_ebitda_fy1": "Adjusted EBITDA / Adj. EBITDA as explicitly stated in document for earliest fiscal year in $000s. Only if document has a dedicated Adj. EBITDA row.",
-    "adj_ebitda_fy2": "Adjusted EBITDA as explicitly stated in document for middle fiscal year in $000s.",
-    "adj_ebitda_fy3": "Adjusted EBITDA as explicitly stated in document for most recent fiscal year in $000s.",
+    "adj_ebitda_fy1": "Adjusted EBITDA for earliest fiscal year in $000s. Accept ANY label (case-insensitive): 'Adj. EBITDA', 'Adjusted EBITDA', 'Adj EBITDA', 'EBITDA (Adjusted)', 'EBITDA (as adjusted)', 'Normalized EBITDA', 'Recurring EBITDA'. Prefer the row immediately following a 'Total Add-backs' or 'Non-Recurring Adjustments' subtotal. Fallback: derive as operating_income + adjustments (confidence 0.75).",
+    "adj_ebitda_fy2": "Adjusted EBITDA for middle fiscal year in $000s. Same label variants and fallback derivation as adj_ebitda_fy1.",
+    "adj_ebitda_fy3": "Adjusted EBITDA for most recent fiscal year in $000s. Same label variants and fallback derivation as adj_ebitda_fy1.",
     "net_revenue_collateral": "Net revenue value as collateral/borrowing base — most recent year (in $000s).",
     "inventory_collateral": "Physical inventory book value for collateral (in $000s).",
     "me_equipment_collateral": "Machinery and equipment book value for collateral (in $000s).",
-    "building_land_collateral": "Building and land / real estate value for collateral (in $000s).",
-    "existing_term_loans": "Existing term loans or cashflow loans outstanding (in $000s).",
+    "building_land_collateral": "GROSS asset value of real estate / building / land in $000s. If a table shows 'Asset Value | Advance Rate | Borrowing Base', return ONLY the Asset Value column — NOT the advance-rate-adjusted borrowing base. If the company is a pure leaseholder or gross value is $0, return 0.",
+    "existing_term_loans": "Outstanding principal balance of any existing term loan or cashflow loan (NOT the revolving ABL/revolver) in $000s. Look in: debt/capital structure tables, 'Sources & Uses', 'Financing' sections. Phrases: 'term loan outstanding', 'term facility balance', '$X.XM outstanding'. Return outstanding balance (use original principal if outstanding not stated separately). Labels: 'Term Loans/Cashflow loans', 'Existing Term Debt'.",
     # ── Projection / Forecast data (extract ONLY if document contains explicit forward-looking statements)
     "proj_revenue_y1": "Projected/budgeted TOTAL revenue Year 1 (first future year after most recent historical) in $000s. Return null if document has no explicit projections.",
     "proj_revenue_y2": "Projected total revenue Year 2 in $000s. Null if not in document.",
@@ -383,6 +383,23 @@ def _detect_fiscal_years(ocr_text: str) -> tuple[int, int, int]:
     # Pre-compute all projection-suffix years from entire document (for Pass 2)
     proj_yrs_by_suffix = {int(m.group(1)) for m in proj_suffix_pat.finditer(ocr_text)}
 
+    # Pre-compute confirmed historical years — those with A/Actual/Audited/Restated marker.
+    # Used by Guard 2 below to verify that the chosen y3 is genuinely historical,
+    # not a projection year that leaked through when the document omits E/F/B/P suffixes.
+    _hist_marker_pat = re.compile(
+        r'(?<!\d)(20\d{2})\s*[Aa](?![A-Za-z0-9])'           # "FY2024A", "2024A"
+        r'|(?<!\d)(20\d{2})\b[^\n]{0,30}?(?:Actual|Audited|Restated)\b',  # "FY2024 Actual"
+        re.IGNORECASE
+    )
+    confirmed_hist_years: set[int] = set()
+    for _hm in _hist_marker_pat.finditer(ocr_text):
+        _yr_str = _hm.group(1) or _hm.group(2)
+        if _yr_str:
+            _hyr = int(_yr_str)
+            if 2000 <= _hyr <= current_year:
+                confirmed_hist_years.add(_hyr)
+    logger.info(f"  Confirmed-historical years (A/Actual/Audited markers): {sorted(confirmed_hist_years)}")
+
     # ── Pass 1: table-header lines (primary signal) ───────────────────────────
     table_counts: dict[int, int] = {}
     in_proj_section = False
@@ -444,7 +461,36 @@ def _detect_fiscal_years(ocr_text: str) -> tuple[int, int, int]:
     # E.g. if document's latest historical year = 2024 → fy3=2024, fy2=2023, fy1=2022
     # This prevents non-consecutive gaps (e.g. 2024,2022,2020) and ignores older
     # columns when the document contains more than 3 historical years.
-    y3 = candidates[0] if candidates else current_year
+    most_recent_year = candidates[0] if candidates else current_year
+
+    # Guard 1 — y3 must never be a future year (hard-cap at current_year)
+    # Handles edge case where a projection table header like "FY2025 | FY2026" appears
+    # without E/F suffix and current_year happens to equal one of those years.
+    if most_recent_year > current_year:
+        fallback_years = sorted([y for y in candidates if y <= current_year], reverse=True)
+        most_recent_year = fallback_years[0] if fallback_years else current_year - 1
+        logger.info(f"  FY detect Guard 1: future year capped → y3={most_recent_year}")
+
+    # Guard 2 — if y3 ONLY appears with projection suffixes (E/F/B/P) and NEVER with
+    # historical markers (A/Actual/Audited/Restated), it is a projection year that leaked
+    # through because the document omitted suffixes in some tables or the section-context
+    # detector did not trigger.  Walk back to the nearest confirmed-historical year.
+    if most_recent_year in proj_yrs_by_suffix and most_recent_year not in confirmed_hist_years:
+        logger.info(
+            f"  FY detect Guard 2: y3={most_recent_year} is proj-suffix-only "
+            f"(confirmed_hist={sorted(confirmed_hist_years)}) — walking back"
+        )
+        hist_candidates = sorted(
+            [y for y in candidates if y not in proj_yrs_by_suffix or y in confirmed_hist_years],
+            reverse=True
+        )
+        if hist_candidates:
+            most_recent_year = hist_candidates[0]
+        else:
+            most_recent_year = most_recent_year - 1  # last resort: step back one year
+        logger.info(f"  FY detect Guard 2: corrected y3={most_recent_year}")
+
+    y3 = most_recent_year
     y2 = y3 - 1
     y1 = y3 - 2
 
@@ -516,6 +562,18 @@ RESTATED vs AS-REPORTED (when two columns exist for the same year):
   Use priority: Restated > Revised > Adjusted > As Reported > As Filed > unlabelled.
   Record both values in the citation.
 
+COLLATERAL & DEBT FIELDS — IMPORTANT:
+  existing_term_loans: Return the OUTSTANDING principal balance of any existing term loan
+    or cashflow loan. Do NOT return the revolving ABL/revolver balance.
+    Look in: debt/capital structure tables, 'Sources & Uses' section, 'Financing' prose.
+    Phrases: "term loan outstanding", "term facility balance", "$X.XM outstanding".
+    If only original principal is stated, use that. Values in $000s.
+    Common labels: "Term Loans/Cashflow loans", "Existing Term Debt".
+  building_land_collateral: Return the GROSS asset value of real estate/building/land.
+    If a table shows "Asset Value | Advance Rate | Borrowing Base", return only
+    the Asset Value column. Do NOT return the advance-rate-adjusted borrowing base.
+    If the company is a pure leaseholder or gross value is $0, return 0 (not null).
+
 ════════════════════════════════════════════════════════════
 SECTION B — REVENUE IDENTIFICATION
 ════════════════════════════════════════════════════════════
@@ -549,6 +607,18 @@ Set confidence = 0.75 for all derived values. Cite the formula in citation.
   DSCR               = CFADS / Total Debt Service
   FCCR               = (Adj. EBITDA − CAPEX) / Total Debt Service
 
+ADJ. EBITDA LABEL MATCHING — check these in order before deriving:
+  Accepted row labels (case-insensitive):
+    "Adj. EBITDA"  |  "Adjusted EBITDA"  |  "Adj EBITDA"
+    "EBITDA (Adjusted)"  |  "EBITDA (as adjusted)"
+    "Normalized EBITDA"  |  "Recurring EBITDA"
+  Preferred source: the row immediately following a "Total Add-backs" or
+    "Non-Recurring Adjustments" subtotal row.
+  Fallback derivation (use ONLY when none of the above labels exist):
+    adj_ebitda = operating_income + adjustments
+    where operating_income = the EBIT / Operating Income / Operating Profit line
+    Set confidence = 0.75 for this derived value. Cite the formula.
+
 ADJ. EBITDA CROSS-CHECK (run for every historical year):
   calc = gross_margin − sga + adjustments
   If |stated_ebitda − calc| / calc > 0.05:
@@ -560,6 +630,16 @@ SECTION D — PROJECTION EXTRACTION RULES
 ════════════════════════════════════════════════════════════
 Extract proj_ fields ONLY if the document has an explicit forward-looking table
 labelled: Forecast, Projections, Budget, Management Case, Strategic Plan, Outlook.
+
+IMPORTANT DISTINCTION — E/F/B/P SUFFIX COLUMNS:
+  For HISTORICAL fields (revenue_fy1/fy2/fy3, gross_margin_fy1/2/3, sga_fy1/2/3,
+    interest_expense_fy1/2/3, adjustments_fy1/2/3, adj_ebitda_fy1/2/3):
+    DO NOT extract values from columns with E/F/B/P suffix. Those are projection columns.
+  For PROJECTION fields (proj_revenue_y1..y5, proj_gross_margin_y1..y5, proj_sga_y1..y5):
+    DO extract values from columns with E/F/B/P suffix — these ARE the projection columns.
+    proj_revenue_y1 = value in the FIRST projection year column (lowest E/F-suffix year > fy3)
+    proj_revenue_y2 = value in the SECOND projection year column, etc.
+    Year ordering: y1 = nearest future year ({proj_y1}), y5 = furthest ({proj_y5}).
 
 CONTAMINATION GUARD: If proj_revenue_yN exactly equals revenue_fy3 → set to null.
 If no explicit forecast section exists → return null for ALL proj_ fields.
@@ -579,6 +659,11 @@ Before writing your final JSON, verify each item:
   [ ] All confidence < 0.70 fields set to null
   [ ] Restated column used when dual columns exist for same year
   [ ] Projection contamination guard applied
+  [ ] Adj. EBITDA: checked all label variants before using derivation fallback
+  [ ] existing_term_loans: returned outstanding balance, NOT the revolving ABL/revolver
+  [ ] building_land_collateral: returned GROSS asset value, NOT advance-rate-adjusted borrowing base
+  [ ] E/F/B/P suffix columns: NOT mapped to historical slots (fy1/fy2/fy3)
+  [ ] E/F/B/P suffix columns: ARE correctly mapped to proj_* slots (y1..y5)
 
 ════════════════════════════════════════════════════════════
 SECTION F — OUTPUT JSON SCHEMA
