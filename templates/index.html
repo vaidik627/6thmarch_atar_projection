@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Atar Capital – Prebid Analysis</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar navbar-dark bg-dark-atar px-4">
+  <span class="navbar-brand fw-semibold">
+    <i class="bi bi-bar-chart-fill me-2 text-accent"></i>Atar Capital &mdash; Prebid Analysis System
+  </span>
+</nav>
+
+<div class="container mt-5">
+
+  <!-- Flash messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>{{ message }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <!-- API Verification Panel -->
+  <div class="row justify-content-center mb-3">
+    <div class="col-lg-7">
+      <div class="card shadow-sm border-0" id="verifyCard">
+        <div class="card-body py-2 px-3 d-flex align-items-center justify-content-between flex-wrap gap-2">
+          <span class="small text-muted fw-semibold">
+            <i class="bi bi-plug me-1"></i>API Status
+          </span>
+          <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-sm btn-outline-secondary verify-btn" id="btnVerifyOcr" onclick="runVerify('ocr')">
+              <i class="bi bi-arrow-repeat me-1"></i>Test OCR
+            </button>
+            <span id="statusOcr" class="verify-status align-self-center"></span>
+            <button class="btn btn-sm btn-outline-secondary verify-btn ms-2" id="btnVerifyLlm" onclick="runVerify('llm')">
+              <i class="bi bi-arrow-repeat me-1"></i>Test LLM
+            </button>
+            <span id="statusLlm" class="verify-status align-self-center"></span>
+          </div>
+        </div>
+        <div id="verifyDetails" class="px-3 pb-2 d-none">
+          <hr class="my-1">
+          <pre id="verifyDetailsText" class="small text-muted mb-0" style="font-size:.72rem;white-space:pre-wrap;"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row justify-content-center">
+    <div class="col-lg-7">
+
+      <!-- Header card -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header bg-dark-atar text-white">
+          <h5 class="mb-0"><i class="bi bi-cloud-upload me-2"></i>Upload Company Document</h5>
+        </div>
+        <div class="card-body p-4">
+          <p class="text-muted mb-4">
+            Upload the company's PDF (CIM, financial statements, or offering memorandum).
+            The system will OCR the document and automatically extract historical financials,
+            then guide you through entering deal-specific parameters.
+          </p>
+
+          <form action="/upload" method="POST" enctype="multipart/form-data" id="uploadForm">
+            <div class="mb-4">
+              <label for="pdf_file" class="form-label fw-semibold">Company PDF</label>
+              <div class="upload-area" id="uploadArea">
+                <i class="bi bi-file-earmark-pdf upload-icon"></i>
+                <p class="mb-1 fw-semibold">Drag &amp; drop your PDF here</p>
+                <p class="text-muted small mb-3">or click to browse</p>
+                <input type="file" name="pdf_file" id="pdf_file" accept=".pdf" class="d-none" required />
+                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('pdf_file').click()">
+                  <i class="bi bi-folder2-open me-1"></i>Browse PDF
+                </button>
+                <div id="selectedFile" class="mt-3 d-none">
+                  <span class="badge bg-success fs-6 px-3 py-2">
+                    <i class="bi bi-file-earmark-check me-1"></i>
+                    <span id="fileName"></span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="d-grid">
+              <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
+                <i class="bi bi-cpu me-2"></i>Process &amp; Extract
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Process steps -->
+      <div class="card shadow-sm">
+        <div class="card-body p-4">
+          <h6 class="fw-semibold mb-3 text-muted text-uppercase" style="font-size:.75rem;letter-spacing:.08em;">How it works</h6>
+          <div class="steps">
+            <div class="step-item">
+              <span class="step-num">1</span>
+              <div>
+                <strong>OCR Processing</strong>
+                <p class="text-muted small mb-0">Google Document AI extracts all text from the uploaded PDF.</p>
+              </div>
+            </div>
+            <div class="step-item">
+              <span class="step-num">2</span>
+              <div>
+                <strong>AI Extraction</strong>
+                <p class="text-muted small mb-0">LLM identifies historical financials and collateral values with confidence scoring.</p>
+              </div>
+            </div>
+            <div class="step-item">
+              <span class="step-num">3</span>
+              <div>
+                <strong>Review &amp; Inputs</strong>
+                <p class="text-muted small mb-0">Review extracted data and enter deal-specific parameters (rates, terms, projections).</p>
+              </div>
+            </div>
+            <div class="step-item">
+              <span class="step-num">4</span>
+              <div>
+                <strong>Full Analysis</strong>
+                <p class="text-muted small mb-0">Complete prebid analysis with Sources &amp; Uses, MOIC, DSCR, FCCR, and 5-year projections.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loadingOverlay" class="d-none">
+  <div class="spinner-wrapper">
+    <div class="spinner-border text-light mb-3" style="width:3rem;height:3rem;" role="status"></div>
+    <div class="text-white fw-semibold fs-5" id="loadingTitle">Processing document…</div>
+    <div class="text-white-50 small mt-1" id="loadingSubtitle">Chunking PDF and running OCR (this may take 30–90s for large documents)</div>
+    <div class="mt-3 d-flex gap-3 justify-content-center">
+      <span class="badge bg-secondary px-3 py-2" id="loadingStep1"><i class="bi bi-file-earmark-pdf me-1"></i>OCR</span>
+      <span class="badge bg-secondary px-3 py-2" id="loadingStep2"><i class="bi bi-cpu me-1"></i>AI Extract</span>
+      <span class="badge bg-secondary px-3 py-2" id="loadingStep3"><i class="bi bi-check2 me-1"></i>Validate</span>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script>
+  // ── File upload ─────────────────────────────────────────────────────────────
+  const fileInput = document.getElementById('pdf_file');
+  const uploadArea = document.getElementById('uploadArea');
+  const selectedFile = document.getElementById('selectedFile');
+  const fileName = document.getElementById('fileName');
+  const submitBtn = document.getElementById('submitBtn');
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) {
+      fileName.textContent = fileInput.files[0].name;
+      selectedFile.classList.remove('d-none');
+    }
+  });
+
+  uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
+  uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
+  uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('drag-over');
+    const dt = e.dataTransfer;
+    if (dt.files.length && dt.files[0].name.endsWith('.pdf')) {
+      fileInput.files = dt.files;
+      fileName.textContent = dt.files[0].name;
+      selectedFile.classList.remove('d-none');
+    }
+  });
+
+  // Animate loading steps on submit
+  document.getElementById('uploadForm').addEventListener('submit', () => {
+    document.getElementById('loadingOverlay').classList.remove('d-none');
+    submitBtn.disabled = true;
+    // Animate step badges
+    setTimeout(() => document.getElementById('loadingStep1').className = 'badge bg-primary px-3 py-2', 500);
+    setTimeout(() => {
+      document.getElementById('loadingStep1').className = 'badge bg-success px-3 py-2';
+      document.getElementById('loadingStep2').className = 'badge bg-primary px-3 py-2';
+      document.getElementById('loadingSubtitle').textContent = 'AI extracting financial fields…';
+    }, 8000);
+    setTimeout(() => {
+      document.getElementById('loadingStep2').className = 'badge bg-success px-3 py-2';
+      document.getElementById('loadingStep3').className = 'badge bg-primary px-3 py-2';
+      document.getElementById('loadingSubtitle').textContent = 'Validating extracted data…';
+    }, 20000);
+  });
+
+  // ── API Verification ─────────────────────────────────────────────────────────
+  async function runVerify(service) {
+    const btn = document.getElementById(`btnVerify${service.charAt(0).toUpperCase() + service.slice(1)}`);
+    const statusEl = document.getElementById(`status${service.charAt(0).toUpperCase() + service.slice(1)}`);
+    const detailsBox = document.getElementById('verifyDetails');
+    const detailsText = document.getElementById('verifyDetailsText');
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
+    statusEl.innerHTML = '';
+
+    try {
+      const res = await fetch(`/verify/${service}`);
+      const data = await res.json();
+
+      if (data.ok) {
+        statusEl.innerHTML = `<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>`;
+      } else {
+        statusEl.innerHTML = `<span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>Failed</span>`;
+      }
+
+      // Show details
+      detailsBox.classList.remove('d-none');
+      const existing = detailsText.textContent;
+      const label = service.toUpperCase();
+      const detail = `[${label}] ${data.message}\n` +
+        (Object.keys(data.details || {}).length
+          ? Object.entries(data.details).map(([k, v]) => `  ${k}: ${v}`).join('\n') + '\n'
+          : '');
+      detailsText.textContent = detail + (existing ? '\n' + existing : '');
+
+    } catch (e) {
+      statusEl.innerHTML = `<span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>Error</span>`;
+      detailsText.textContent = `[${service.toUpperCase()}] Network error: ${e.message}\n` + detailsText.textContent;
+      detailsBox.classList.remove('d-none');
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = `<i class="bi bi-arrow-repeat me-1"></i>Test ${service.toUpperCase() === 'OCR' ? 'OCR' : 'LLM'}`;
+  }
+</script>
+</body>
+</html>

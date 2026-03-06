@@ -1,0 +1,517 @@
+{# Macro for extracted field rendering — must be defined before use #}
+{% macro render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors, form_data) %}
+{% set val = extracted.get(field_key) %}
+{% set conf = confidences.get(field_key, 0) %}
+{% set citation = citations.get(field_key, '') %}
+{% set flag = validation_flags.get(field_key, {}) %}
+{% set flag_status = flag.get('status', 'ok') %}
+{% set form_val = form_data.get(field_key, val) %}
+{% set has_error = field_key in manual_errors %}
+
+<div class="extracted-field mb-2">
+  <div class="d-flex align-items-center justify-content-between mb-1">
+    <label class="form-label small fw-semibold mb-0">{{ field_label }}</label>
+    {% if val is not none %}
+      {% if conf >= 0.85 %}
+        <span class="badge bg-success badge-conf"><i class="bi bi-check-circle me-1"></i>{{ "%.0f"|format(conf*100) }}%</span>
+      {% elif conf >= 0.70 %}
+        <span class="badge bg-warning text-dark badge-conf"><i class="bi bi-exclamation-circle me-1"></i>{{ "%.0f"|format(conf*100) }}%</span>
+      {% else %}
+        <span class="badge bg-danger badge-conf"><i class="bi bi-x-circle me-1"></i>{{ "%.0f"|format(conf*100) }}%</span>
+      {% endif %}
+    {% else %}
+      <span class="badge bg-secondary badge-conf"><i class="bi bi-pencil me-1"></i>Manual</span>
+    {% endif %}
+  </div>
+  <input type="number" step="0.01" name="{{ field_key }}"
+    class="form-control form-control-sm
+      {% if has_error %}is-invalid
+      {% elif flag_status == 'error' %}border-danger
+      {% elif flag_status == 'warning' %}border-warning
+      {% endif %}"
+    value="{{ form_val if form_val is not none else '' }}"
+    placeholder="Enter value in $000s">
+  {% if has_error %}
+    <div class="invalid-feedback">{{ manual_errors[field_key] }}</div>
+  {% elif flag.get('message') %}
+    <div class="form-text
+      {% if flag_status == 'error' %}text-danger
+      {% elif flag_status == 'warning' %}text-warning
+      {% else %}text-muted{% endif %}
+    ">
+      {% if flag_status == 'error' %}<i class="bi bi-exclamation-triangle me-1"></i>
+      {% elif flag_status == 'warning' %}<i class="bi bi-exclamation-circle me-1"></i>
+      {% else %}<i class="bi bi-check2 me-1"></i>{% endif %}
+      {{ flag.get('message') }}
+    </div>
+  {% endif %}
+  {% if citation %}
+    <div class="citation-snippet">
+      <i class="bi bi-quote me-1"></i><em>{{ citation[:120] }}{% if citation|length > 120 %}…{% endif %}</em>
+    </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review Extraction – Atar Capital Prebid</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+</head>
+<body>
+
+<nav class="navbar navbar-dark bg-dark-atar px-4">
+  <span class="navbar-brand fw-semibold">
+    <i class="bi bi-bar-chart-fill me-2 text-accent"></i>Atar Capital &mdash; Prebid Analysis System
+  </span>
+  <a href="/reset" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-left me-1"></i>Start Over</a>
+</nav>
+
+<!-- Progress bar -->
+<div class="progress" style="height:4px;border-radius:0;">
+  <div class="progress-bar bg-accent" style="width:50%"></div>
+</div>
+
+<div class="container-fluid mt-4 px-4">
+  <div class="d-flex align-items-center mb-3">
+    <div>
+      <h4 class="mb-0 fw-semibold">Step 2 &mdash; Review &amp; Complete Inputs</h4>
+      <p class="text-muted small mb-0">Document: <strong>{{ pdf_filename }}</strong></p>
+    </div>
+  </div>
+
+  <!-- Flash messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }} alert-dismissible fade show">{{ message }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <!-- Confidence legend -->
+  <div class="mb-3">
+    <span class="badge bg-success me-2"><i class="bi bi-circle-fill me-1"></i>High confidence (≥85%)</span>
+    <span class="badge bg-warning text-dark me-2"><i class="bi bi-circle-fill me-1"></i>Medium confidence (70–84%)</span>
+    <span class="badge bg-danger me-2"><i class="bi bi-circle-fill me-1"></i>Low confidence / verify</span>
+    <span class="badge bg-secondary"><i class="bi bi-pencil-fill me-1"></i>Manual input required</span>
+  </div>
+
+  <form action="/calculate" method="POST" id="reviewForm">
+
+    <div class="row g-4">
+
+      <!-- LEFT: Extracted historical data -->
+      <div class="col-xl-6">
+
+        <!-- Extracted: Historical P&L -->
+        <div class="card shadow-sm mb-4">
+          <div class="card-header section-header">
+            <i class="bi bi-graph-up me-2"></i>Extracted — Historical P&amp;L
+            <small class="text-muted ms-2">(Values auto-extracted from PDF, editable)</small>
+          </div>
+          <div class="card-body p-3">
+
+            <!-- Company Name -->
+            <div class="row mb-3 g-2">
+              <div class="col-12">
+                <label class="form-label small fw-semibold">Company Name</label>
+                <input type="text" name="company_name" class="form-control form-control-sm"
+                  value="{{ extracted.get('company_name') or '' }}"
+                  placeholder="Enter company name">
+              </div>
+            </div>
+
+            <!-- FY Year labels -->
+            <div class="row mb-3 g-2">
+              <div class="col-4">
+                <label class="form-label small fw-semibold">FY Year 1 Label
+                  {% if not extracted.get('_data_present_fy1', True) %}
+                  <span class="badge bg-secondary ms-1" style="font-size:0.65em">No data found</span>
+                  {% endif %}
+                </label>
+                <input type="text" name="fy_year_1" class="form-control form-control-sm"
+                  value="{{ extracted.get('fy_year_1') or '' }}" placeholder="e.g. FY2019">
+              </div>
+              <div class="col-4">
+                <label class="form-label small fw-semibold">FY Year 2 Label
+                  {% if not extracted.get('_data_present_fy2', True) %}
+                  <span class="badge bg-secondary ms-1" style="font-size:0.65em">No data found</span>
+                  {% endif %}
+                </label>
+                <input type="text" name="fy_year_2" class="form-control form-control-sm"
+                  value="{{ extracted.get('fy_year_2') or '' }}" placeholder="e.g. FY2020">
+              </div>
+              <div class="col-4">
+                <label class="form-label small fw-semibold">FY Year 3 Label
+                  {% if not extracted.get('_data_present_fy3', True) %}
+                  <span class="badge bg-secondary ms-1" style="font-size:0.65em">No data found</span>
+                  {% endif %}
+                </label>
+                <input type="text" name="fy_year_3" class="form-control form-control-sm"
+                  value="{{ extracted.get('fy_year_3') or '' }}" placeholder="e.g. FY2021">
+              </div>
+            </div>
+
+            <!-- Revenue -->
+            {% set rev_fields = [
+              ('revenue_fy1','Revenue / Sales – FY1'),
+              ('revenue_fy2','Revenue / Sales – FY2'),
+              ('revenue_fy3','Revenue / Sales – FY3'),
+            ] %}
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2">Revenue / Sales (in $000s)</h6>
+            {% for field_key, field_label in rev_fields %}
+              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% endfor %}
+
+            <!-- Gross Margin -->
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2 mt-3">Gross Margin (in $000s)</h6>
+            {% for field_key, field_label in [('gross_margin_fy1','Gross Margin – FY1'),('gross_margin_fy2','Gross Margin – FY2'),('gross_margin_fy3','Gross Margin – FY3')] %}
+              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% endfor %}
+
+            <!-- SG&A -->
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2 mt-3">SG&amp;A (in $000s)</h6>
+            {% for field_key, field_label in [('sga_fy1','SG&A – FY1'),('sga_fy2','SG&A – FY2'),('sga_fy3','SG&A – FY3')] %}
+              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% endfor %}
+
+            <!-- Interest -->
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2 mt-3">Interest Expense (in $000s)</h6>
+            {% for field_key, field_label in [('interest_expense_fy1','Interest – FY1'),('interest_expense_fy2','Interest – FY2'),('interest_expense_fy3','Interest – FY3')] %}
+              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% endfor %}
+
+            <!-- 1X Adjustments -->
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2 mt-3">1X / Non-Recurring Adjustments (in $000s)</h6>
+            {% for field_key, field_label in [('adjustments_fy1','Adjustments – FY1'),('adjustments_fy2','Adjustments – FY2'),('adjustments_fy3','Adjustments – FY3')] %}
+              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% endfor %}
+
+          </div>
+        </div>
+
+        <!-- Extracted: Collateral / Sources -->
+        <div class="card shadow-sm mb-4">
+          <div class="card-header section-header">
+            <i class="bi bi-bank me-2"></i>Extracted — Collateral &amp; Sources
+          </div>
+          <div class="card-body p-3">
+            {# ENH-4: net_revenue_collateral defaults to revenue_fy3 when null #}
+            {% set nr_extracted = extracted.get('net_revenue_collateral') %}
+            {% set nr_form = (form_data.get('net_revenue_collateral') if form_data is defined else none) %}
+            {% set nr_val = nr_form if nr_form is not none else (nr_extracted if nr_extracted is not none else extracted.get('revenue_fy3')) %}
+            {% set nr_conf = confidences.get('net_revenue_collateral', 0) %}
+            {% set nr_flag = validation_flags.get('net_revenue_collateral', {}) %}
+            <div class="extracted-field mb-2">
+              <div class="d-flex align-items-center justify-content-between mb-1">
+                <label class="form-label small fw-semibold mb-0">Net Revenue Collateral ($000s)</label>
+                {% if nr_extracted is not none %}
+                  {% if nr_conf >= 0.85 %}<span class="badge bg-success badge-conf"><i class="bi bi-check-circle me-1"></i>{{ "%.0f"|format(nr_conf*100) }}%</span>
+                  {% elif nr_conf >= 0.70 %}<span class="badge bg-warning text-dark badge-conf"><i class="bi bi-exclamation-circle me-1"></i>{{ "%.0f"|format(nr_conf*100) }}%</span>
+                  {% else %}<span class="badge bg-danger badge-conf"><i class="bi bi-x-circle me-1"></i>{{ "%.0f"|format(nr_conf*100) }}%</span>
+                  {% endif %}
+                {% else %}
+                  <span class="badge bg-secondary badge-conf"><i class="bi bi-pencil me-1"></i>Manual</span>
+                {% endif %}
+              </div>
+              <input type="number" step="0.01" name="net_revenue_collateral"
+                class="form-control form-control-sm {% if nr_flag.get('status') == 'error' %}border-danger{% elif nr_flag.get('status') == 'warning' %}border-warning{% endif %}"
+                value="{{ nr_val if nr_val is not none else '' }}"
+                placeholder="Enter value in $000s">
+              <div class="form-text text-muted"><i class="bi bi-info-circle me-1"></i>Defaults to most recent year revenue when not found in document.</div>
+            </div>
+            {% for field_key, field_label in [
+              ('inventory_collateral','Inventory Book Value ($000s)'),
+              ('me_equipment_collateral','M&E Equipment ($000s)'),
+              ('building_land_collateral','Building & Land ($000s)'),
+              ('existing_term_loans','Existing Term Loans ($000s)'),
+            ] %}
+              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% endfor %}
+          </div>
+        </div>
+
+      </div>
+
+      <!-- RIGHT: Manual inputs -->
+      <div class="col-xl-6">
+
+        <!-- Advance Rates -->
+        <div class="card shadow-sm mb-4">
+          <div class="card-header section-header-manual">
+            <i class="bi bi-pencil-square me-2"></i>Manual Input — Advance Rates &amp; Deal Terms
+          </div>
+          <div class="card-body p-3">
+
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2">Advance Rates (0.0 – 1.0)</h6>
+            <div class="row g-2 mb-3">
+              <div class="col-4">
+                <label class="form-label small">Net Revenue Rate</label>
+                <input type="number" step="0.01" min="0" max="1" name="net_revenue_multiplier"
+                  class="form-control form-control-sm {% if manual_errors is defined and 'net_revenue_multiplier' in manual_errors %}is-invalid{% endif %}"
+                  value="{{ form_data.get('net_revenue_multiplier', '0.75') if form_data is defined else '0.75' }}" required>
+                {% if manual_errors is defined and 'net_revenue_multiplier' in manual_errors %}
+                  <div class="invalid-feedback">{{ manual_errors['net_revenue_multiplier'] }}</div>
+                {% endif %}
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Inventory Rate</label>
+                <input type="number" step="0.01" min="0" max="1" name="inventory_multiplier"
+                  class="form-control form-control-sm"
+                  value="{{ form_data.get('inventory_multiplier', '0.70') if form_data is defined else '0.70' }}" required>
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Bldg &amp; Land Rate</label>
+                <input type="number" step="0.01" min="0" max="1" name="building_land_multiplier"
+                  class="form-control form-control-sm"
+                  value="{{ form_data.get('building_land_multiplier', '0.50') if form_data is defined else '0.50' }}" required>
+              </div>
+            </div>
+
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2">M&amp;E Equipment Advance Rate</h6>
+            <div class="row g-2 mb-3">
+              <div class="col-4">
+                <input type="number" step="0.01" min="0" max="1" name="me_equipment_multiplier"
+                  class="form-control form-control-sm"
+                  value="{{ form_data.get('me_equipment_multiplier', '0') if form_data is defined else '0' }}">
+              </div>
+            </div>
+
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2">Deal Terms ($000s)</h6>
+            <div class="row g-2 mb-3">
+              <div class="col-4">
+                <label class="form-label small">Acquisition Multiple (×EBITDA)</label>
+                <input type="number" step="0.1" min="1" max="30" name="acquisition_multiple"
+                  class="form-control form-control-sm"
+                  value="{{ form_data.get('acquisition_multiple', '7.0') if form_data is defined else '7.0' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">% Acquired (0–1)</label>
+                <input type="number" step="0.01" min="0" max="1" name="pct_acquired"
+                  class="form-control form-control-sm"
+                  value="{{ form_data.get('pct_acquired', '1.0') if form_data is defined else '1.0' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Seller Note</label>
+                <input type="number" step="0.01" name="seller_note" class="form-control form-control-sm"
+                  value="{{ form_data.get('seller_note', '0') if form_data is defined else '0' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Earnout</label>
+                <input type="number" step="0.01" name="earnout" class="form-control form-control-sm"
+                  value="{{ form_data.get('earnout', '0') if form_data is defined else '0' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Equity Roll From Seller</label>
+                <input type="number" step="0.01" name="equity_roll_from_seller" class="form-control form-control-sm"
+                  value="{{ form_data.get('equity_roll_from_seller', '0') if form_data is defined else '0' }}">
+              </div>
+            </div>
+
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2">Uses</h6>
+            <div class="row g-2 mb-3">
+              <div class="col-4">
+                <label class="form-label small">Transaction Fees ($000s)</label>
+                <input type="number" step="0.01" name="transaction_fees_total" class="form-control form-control-sm"
+                  value="{{ form_data.get('transaction_fees_total', '1500') if form_data is defined else '1500' }}" required>
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Working Capital Multiple</label>
+                <input type="number" step="0.1" name="working_capital_change" class="form-control form-control-sm"
+                  value="{{ form_data.get('working_capital_change', '7') if form_data is defined else '7' }}" required>
+              </div>
+              <div class="col-4">
+                <label class="form-label small">CFADS Factor</label>
+                <input type="number" step="0.01" name="cfads_factor" class="form-control form-control-sm"
+                  value="{{ form_data.get('cfads_factor', '1') if form_data is defined else '1' }}" required>
+              </div>
+            </div>
+
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2">Rates &amp; Parameters</h6>
+            <div class="row g-2">
+              <div class="col-3">
+                <label class="form-label small">CAPEX % Avail.</label>
+                <input type="number" step="0.01" min="0" max="1" name="capex_pct_availability" class="form-control form-control-sm"
+                  value="{{ form_data.get('capex_pct_availability', '0.30') if form_data is defined else '0.30' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Depr. Rate</label>
+                <input type="number" step="0.001" min="0" max="0.5" name="depreciation_rate" class="form-control form-control-sm"
+                  value="{{ form_data.get('depreciation_rate', '0.045') if form_data is defined else '0.045' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Mgmt LTIP Rate</label>
+                <input type="number" step="0.001" min="0" max="0.5" name="mgmt_ltip_rate" class="form-control form-control-sm"
+                  value="{{ form_data.get('mgmt_ltip_rate', '0.055') if form_data is defined else '0.055' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Atar Ownership Rate</label>
+                <input type="number" step="0.001" min="0" max="0.5" name="atar_ownership_rate" class="form-control form-control-sm"
+                  value="{{ form_data.get('atar_ownership_rate', '0.05') if form_data is defined else '0.05' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">LP %</label>
+                <input type="number" step="0.001" min="0" max="0.5" name="lp_pct" class="form-control form-control-sm"
+                  value="{{ form_data.get('lp_pct', '0.03') if form_data is defined else '0.03' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Preferred %</label>
+                <input type="number" step="0.001" min="0" max="0.5" name="preferred_pct" class="form-control form-control-sm"
+                  value="{{ form_data.get('preferred_pct', '0.05') if form_data is defined else '0.05' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">FCCR Rate</label>
+                <input type="number" step="0.001" min="0" max="1" name="fccr_rate" class="form-control form-control-sm"
+                  value="{{ form_data.get('fccr_rate', '0.08') if form_data is defined else '0.08' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Remaining Cash %</label>
+                <input type="number" step="0.01" min="0" max="1" name="remaining_cash_pct" class="form-control form-control-sm"
+                  value="{{ form_data.get('remaining_cash_pct', '0.75') if form_data is defined else '0.75' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Equity Return Yrs</label>
+                <input type="number" step="1" min="1" name="return_of_equity_years" class="form-control form-control-sm"
+                  value="{{ form_data.get('return_of_equity_years', '3') if form_data is defined else '3' }}">
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Atar Repayment Yrs</label>
+                <input type="number" step="1" min="1" name="atar_repayment_years" class="form-control form-control-sm"
+                  value="{{ form_data.get('atar_repayment_years', '4') if form_data is defined else '4' }}">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transaction Fees Detail -->
+        <div class="card shadow-sm mb-4">
+          <div class="card-header section-header-manual">
+            <i class="bi bi-receipt me-2"></i>Transaction Fees Detail
+          </div>
+          <div class="card-body p-3">
+            <div class="row g-2">
+              <div class="col-6">
+                <label class="form-label small">Debt Sourcing Rate</label>
+                <input type="number" step="0.0001" min="0" max="0.1" name="debt_sourcing_rate" class="form-control form-control-sm"
+                  value="{{ form_data.get('debt_sourcing_rate', '0.0075') if form_data is defined else '0.0075' }}">
+              </div>
+              <div class="col-6">
+                <label class="form-label small">Lawyers Rate</label>
+                <input type="number" step="0.0001" min="0" max="0.1" name="lawyers_rate" class="form-control form-control-sm"
+                  value="{{ form_data.get('lawyers_rate', '0.0075') if form_data is defined else '0.0075' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">QofE Diligence ($000s)</label>
+                <input type="number" step="1" name="qof_e_diligence" class="form-control form-control-sm"
+                  value="{{ form_data.get('qof_e_diligence', '250') if form_data is defined else '250' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Tax ($000s)</label>
+                <input type="number" step="1" name="tax_fee" class="form-control form-control-sm"
+                  value="{{ form_data.get('tax_fee', '125') if form_data is defined else '125' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">R&amp;W Insurance ($000s)</label>
+                <input type="number" step="1" name="rw_insurance" class="form-control form-control-sm"
+                  value="{{ form_data.get('rw_insurance', '50') if form_data is defined else '50' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Atar Bonuses Senior ($000s)</label>
+                <input type="number" step="1" name="atar_bonuses_senior" class="form-control form-control-sm"
+                  value="{{ form_data.get('atar_bonuses_senior', '75') if form_data is defined else '75' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Atar Bonuses Junior ($000s)</label>
+                <input type="number" step="1" name="atar_bonuses_junior" class="form-control form-control-sm"
+                  value="{{ form_data.get('atar_bonuses_junior', '300') if form_data is defined else '300' }}">
+              </div>
+              <div class="col-4">
+                <label class="form-label small">Project / Other ($000s)</label>
+                <input type="number" step="1" name="project_other" class="form-control form-control-sm"
+                  value="{{ form_data.get('project_other', '100') if form_data is defined else '100' }}">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5-Year Projections -->
+        <div class="card shadow-sm mb-4">
+          <div class="card-header section-header-manual d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-calendar3 me-2"></i>5-Year Projections ($000s)</span>
+            {% if proj_source is defined and proj_source == 'ocr' %}
+              <span class="badge bg-success" style="font-size:.65rem;"><i class="bi bi-file-earmark-text me-1"></i>From document</span>
+            {% else %}
+              <span class="badge bg-secondary" style="font-size:.65rem;"><i class="bi bi-calculator me-1"></i>Auto-calculated from historical avg</span>
+            {% endif %}
+          </div>
+          <div class="card-body p-3">
+
+            <!-- Projection table -->
+            <div class="table-responsive">
+              <table class="table table-sm projection-input-table">
+                <thead>
+                  <tr>
+                    <th>Line Item</th>
+                    <th>Year 1</th>
+                    <th>Year 2</th>
+                    <th>Year 3</th>
+                    <th>Year 4</th>
+                    <th>Year 5</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row_label, row_key in [
+                    ('Revenue / Sales', 'revenue'),
+                    ('Gross Margin', 'gross_margin'),
+                    ('SG&A', 'sga'),
+                    ('1X Adjustments', 'adjustments'),
+                    ('Interest Expense', 'interest_expense'),
+                    ('Term Loan Repayment', 'term_loan'),
+                  ] %}
+                  <tr>
+                    <td class="fw-semibold small">{{ row_label }}</td>
+                    {% for yr in range(1, 6) %}
+                    {% set field_name = row_key ~ '_y' ~ yr %}
+                    {% set default_val = (proj_defaults.get(field_name, '') if proj_defaults is defined else '') %}
+                    {% set cell_val = form_data.get(field_name, default_val) if form_data is defined else default_val %}
+                    <td>
+                      <input type="number" step="0.01" name="{{ field_name }}"
+                        class="form-control form-control-sm proj-input
+                          {% if manual_errors is defined and field_name in manual_errors %}is-invalid{% endif %}"
+                        value="{{ cell_val }}"
+                        placeholder="0">
+                    </td>
+                    {% endfor %}
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Submit -->
+        <div class="d-grid">
+          <button type="submit" class="btn btn-primary btn-lg">
+            <i class="bi bi-calculator me-2"></i>Run Full Analysis
+          </button>
+        </div>
+
+      </div><!-- /col right -->
+    </div><!-- /row -->
+  </form>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

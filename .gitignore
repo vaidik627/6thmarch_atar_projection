@@ -1,0 +1,29 @@
+# Credentials & secrets
+.env
+*.json
+!package.json
+
+# Uploads & generated output
+uploads/
+storage/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

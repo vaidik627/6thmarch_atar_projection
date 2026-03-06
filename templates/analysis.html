@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prebid Analysis – Atar Capital</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+</head>
+<body>
+
+<nav class="navbar navbar-dark bg-dark-atar px-4 d-print-none">
+  <span class="navbar-brand fw-semibold">
+    <i class="bi bi-bar-chart-fill me-2 text-accent"></i>Atar Capital &mdash; Prebid Analysis System
+  </span>
+  <div>
+    <a href="/reset" class="btn btn-sm btn-outline-light me-2"><i class="bi bi-plus-lg me-1"></i>New Analysis</a>
+    <a href="/export" class="btn btn-sm btn-success me-2"><i class="bi bi-file-earmark-excel me-1"></i>Export Excel</a>
+    <button onclick="window.print()" class="btn btn-sm btn-light"><i class="bi bi-printer me-1"></i>Print</button>
+  </div>
+</nav>
+
+<div class="progress d-print-none" style="height:4px;border-radius:0;">
+  <div class="progress-bar bg-accent" style="width:100%"></div>
+</div>
+
+<div class="container-fluid mt-4 px-4">
+
+  <!-- Header -->
+  <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+    <div>
+      <h4 class="mb-0 fw-semibold">Atar Capital Prebid Analysis</h4>
+      <p class="text-muted small mb-0">
+        {{ all_inputs.get('company_name', 'Company') }} &nbsp;|&nbsp;
+        Document: <strong>{{ pdf_filename }}</strong> &nbsp;|&nbsp;
+        All amounts in $000s
+      </p>
+    </div>
+    <!-- Sanity flags -->
+    <div class="d-flex gap-2 flex-wrap">
+      {% if results.get('C57_fccr', 0) >= 1.0 %}
+        <span class="badge bg-success fs-6 px-3"><i class="bi bi-check-circle me-1"></i>FCCR {{ results.C57_fccr }}</span>
+      {% else %}
+        <span class="badge bg-danger fs-6 px-3"><i class="bi bi-exclamation-triangle me-1"></i>FCCR {{ results.C57_fccr }} &lt; 1.0</span>
+      {% endif %}
+      {% set balance_ok = results.get('balance_check', 999)|abs < 1 %}
+      {% if balance_ok %}
+        <span class="badge bg-success fs-6 px-3"><i class="bi bi-check-circle me-1"></i>Sources = Uses</span>
+      {% else %}
+        <span class="badge bg-warning text-dark fs-6 px-3"><i class="bi bi-exclamation-circle me-1"></i>Balance Δ {{ results.balance_check }}</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ═══════════════ KEY METRICS ROW ═══════════════ -->
+  <div class="row g-3 mb-4">
+    {% set metrics = [
+      ('MOIC', results.C29 | round(2), 'bi-trophy', 'primary'),
+      ('Total Uses', '$' ~ (results.E34 | int | format_number), 'bi-cash-stack', 'secondary'),
+      ('Mgmt LTIP', '$' ~ (results.C41 | int | format_number), 'bi-people', 'info'),
+      ('Total Debt Svc', '$' ~ (results.C42 | int | format_number), 'bi-bank', 'warning'),
+      ('Revolver Balance', '$' ~ (results.C49 | int | format_number), 'bi-arrow-repeat', 'success'),
+      ('FCCR Ratio', results.C57_fccr | round(3), 'bi-speedometer', 'danger'),
+    ] %}
+    {% for label, val, icon, color in metrics %}
+    <div class="col-xl-2 col-md-4 col-6">
+      <div class="card h-100 shadow-sm metric-card">
+        <div class="card-body text-center p-3">
+          <i class="bi {{ icon }} metric-icon text-{{ color }}"></i>
+          <div class="metric-val">{{ val }}</div>
+          <div class="metric-label">{{ label }}</div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="row g-4">
+
+    <!-- ═══════ LEFT: Sources & Uses ═══════ -->
+    <div class="col-xl-4">
+
+      <!-- Sources -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header section-header">
+          <i class="bi bi-arrow-down-circle me-2"></i>Sources
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0 analysis-table">
+            <thead><tr><th>Line Item</th><th class="text-end">Amount ($000s)</th></tr></thead>
+            <tbody>
+              <tr><td>Net Revenue <small class="text-muted">(×{{ all_inputs.get('net_revenue_multiplier','—') }})</small></td><td class="text-end">{{ results.E7 | fmt_num }}</td></tr>
+              <tr><td>Inventory <small class="text-muted">(×{{ all_inputs.get('inventory_multiplier','—') }})</small></td><td class="text-end">{{ results.E8 | fmt_num }}</td></tr>
+              <tr><td>M&amp;E Equipment</td><td class="text-end">{{ results.E9 | fmt_num }}</td></tr>
+              <tr><td>Building &amp; Land</td><td class="text-end">{{ results.E11 | fmt_num }}</td></tr>
+              <tr><td>Term Loans / Cashflow</td><td class="text-end">{{ results.E12 | fmt_num }}</td></tr>
+              <tr><td>Seller Note</td><td class="text-end">{{ results.E14 | fmt_num }}</td></tr>
+              <tr><td>Earnout</td><td class="text-end">{{ results.E16 | fmt_num }}</td></tr>
+              <tr><td>Equity Roll From Seller</td><td class="text-end">{{ results.E18 | fmt_num }}</td></tr>
+            </tbody>
+            <tfoot>
+              <tr class="table-dark fw-semibold">
+                <td>Total Sources</td>
+                <td class="text-end">{{ results.total_sources | fmt_num }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- Uses -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header section-header">
+          <i class="bi bi-arrow-up-circle me-2"></i>Uses
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0 analysis-table">
+            <thead><tr><th>Line Item</th><th class="text-end">Amount ($000s)</th></tr></thead>
+            <tbody>
+              <tr><td>Debt Service</td><td class="text-end">{{ results.E30 | fmt_num }}</td></tr>
+              <tr><td>Interest</td><td class="text-end">{{ results.E31 | fmt_num }}</td></tr>
+              <tr><td>ABL (Transaction Fees)</td><td class="text-end">{{ results.E32 | fmt_num }}</td></tr>
+            </tbody>
+            <tfoot>
+              <tr class="table-dark fw-semibold">
+                <td>Total Uses</td>
+                <td class="text-end">{{ results.E34 | fmt_num }}</td>
+              </tr>
+            </tfoot>
+          </table>
+          <div class="px-3 py-2">
+            {% if results.balance_check | abs < 1 %}
+              <span class="text-success small"><i class="bi bi-check-circle me-1"></i>Balanced (Δ {{ results.balance_check }})</span>
+            {% else %}
+              <span class="text-warning small"><i class="bi bi-exclamation-circle me-1"></i>Gap: {{ results.balance_check | fmt_num }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <!-- Transaction Fees Detail -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header section-header">
+          <i class="bi bi-receipt me-2"></i>Transaction Fees Detail
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0 analysis-table">
+            <tbody>
+              <tr><td>Debt Sourcing Costs</td><td class="text-end">{{ results.tf_debt_sourcing | fmt_num }}</td></tr>
+              <tr><td>Lawyers</td><td class="text-end">{{ results.tf_lawyers | fmt_num }}</td></tr>
+              <tr><td>QofE Diligence</td><td class="text-end">{{ results.tf_qofe | fmt_num }}</td></tr>
+              <tr><td>Tax</td><td class="text-end">{{ results.tf_tax | fmt_num }}</td></tr>
+              <tr><td>R&amp;W Insurance</td><td class="text-end">{{ results.tf_rw | fmt_num }}</td></tr>
+              <tr><td>Atar Bonuses Senior</td><td class="text-end">{{ results.tf_senior | fmt_num }}</td></tr>
+              <tr><td>Atar Bonuses Junior</td><td class="text-end">{{ results.tf_junior | fmt_num }}</td></tr>
+              <tr><td>Project / Other</td><td class="text-end">{{ results.tf_project | fmt_num }}</td></tr>
+            </tbody>
+            <tfoot>
+              <tr class="table-dark fw-semibold"><td>Total</td><td class="text-end">{{ results.tf_total | fmt_num }}</td></tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- LP MOIC Summary -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header section-header">
+          <i class="bi bi-pie-chart me-2"></i>LP MOIC Summary
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0 analysis-table">
+            <tbody>
+              <tr><td>Mgmt LTIP</td><td class="text-end">{{ results.C41 | fmt_num }}</td></tr>
+              <tr><td>Total Debt Service</td><td class="text-end">{{ results.C42 | fmt_num }}</td></tr>
+              <tr><td>Amount left after Mgmt LTIP</td><td class="text-end">{{ results.C43 | fmt_num }}</td></tr>
+              <tr><td>LP</td><td class="text-end">{{ results.C44 | fmt_num }}</td></tr>
+              <tr><td>GP</td><td class="text-end fw-semibold">{{ results.C45 | fmt_num }}</td></tr>
+              <tr><td>Preferred</td><td class="text-end">{{ results.C47 | fmt_num }}</td></tr>
+              <tr><td class="fw-semibold">Total</td><td class="text-end fw-semibold">{{ results.C48 | fmt_num }}</td></tr>
+              <tr class="table-info"><td class="fw-semibold">Revolver Balance</td><td class="text-end fw-semibold">{{ results.C49 | fmt_num }}</td></tr>
+              <tr><td>FCCR Amount</td><td class="text-end">{{ results.C52 | fmt_num }}</td></tr>
+              <tr><td>Net Cash Flow</td><td class="text-end">{{ results.C53_left | fmt_num }}</td></tr>
+              <tr><td>Remaining Cash</td><td class="text-end">{{ results.C54_left | fmt_num }}</td></tr>
+              <tr class="table-success"><td class="fw-semibold">LP MOIC Total</td><td class="text-end fw-semibold">{{ results.C55_left | fmt_num }}</td></tr>
+              <tr>
+                <td class="fw-semibold">FCCR Ratio</td>
+                <td class="text-end fw-semibold
+                  {% if results.C57_fccr >= 1.0 %}text-success{% else %}text-danger{% endif %}">
+                  {{ results.C57_fccr }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ═══════ RIGHT: Projections Table ═══════ -->
+    <div class="col-xl-8">
+
+      {# Use LLM-extracted year labels; fall back to detected integer years from document #}
+      {% set _dfy = detected_fy_years if detected_fy_years else [] %}
+      {% set fy1 = all_inputs.get('fy_year_1') or (_dfy[0]|string if _dfy|length >= 1 else 'FY1') %}
+      {% set fy2 = all_inputs.get('fy_year_2') or (_dfy[1]|string if _dfy|length >= 2 else 'FY2') %}
+      {% set fy3 = all_inputs.get('fy_year_3') or (_dfy[2]|string if _dfy|length >= 3 else 'FY3') %}
+      {% set _fy3_int = detected_fy_years[2] if detected_fy_years and detected_fy_years|length >= 3 else 0 %}
+      {% if _fy3_int %}
+        {% set years = [fy1, fy2, fy3, 'FY' ~ (_fy3_int + 1), 'FY' ~ (_fy3_int + 2), 'FY' ~ (_fy3_int + 3), 'FY' ~ (_fy3_int + 4), 'FY' ~ (_fy3_int + 5)] %}
+      {% else %}
+        {% set years = [fy1, fy2, fy3, 'Year 1', 'Year 2', 'Year 3', 'Year 4', 'Year 5'] %}
+      {% endif %}
+      {% set yr_keys = ['FY1','FY2','FY3','Y1','Y2','Y3','Y4','Y5'] %}
+
+      <div class="card shadow-sm mb-4">
+        <div class="card-header section-header">
+          <i class="bi bi-table me-2"></i>Tale of the Tape — Financial Projections
+          <small class="text-muted ms-2">(Amount in $000s)</small>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            {# Dim historical columns that have no extracted data — targets cells via CSS nth-child #}
+            {% if not all_inputs.get('_data_present_fy1', True) %}<style>.projection-table tbody tr td:nth-child(2):not([colspan]){opacity:0.40}</style>{% endif %}
+            {% if not all_inputs.get('_data_present_fy2', True) %}<style>.projection-table tbody tr td:nth-child(3):not([colspan]){opacity:0.40}</style>{% endif %}
+            {% if not all_inputs.get('_data_present_fy3', True) %}<style>.projection-table tbody tr td:nth-child(4):not([colspan]){opacity:0.40}</style>{% endif %}
+
+            <table class="table table-sm table-bordered mb-0 projection-table">
+              <thead>
+                <tr class="table-dark">
+                  <th style="min-width:200px">Line Item</th>
+                  {% for yr in years %}
+                  {% set _cidx = loop.index %}
+                  {% set _no_data = _cidx <= 3 and not all_inputs.get('_data_present_fy' ~ _cidx, True) %}
+                  <th class="text-end {% if _cidx > 3 %}projection-col{% endif %}"
+                      {% if _no_data %}style="opacity:0.40"{% endif %}>
+                    {{ yr }}{% if _no_data %}<br><small class="fw-normal text-muted" style="font-size:0.6em">(no data)</small>{% endif %}
+                  </th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+
+                <!-- Revenue -->
+                <tr class="section-row">
+                  <td class="fw-semibold">Revenue / Sales</td>
+                  {% for k in yr_keys %}<td class="text-end">{{ results.revenue.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+                <tr class="sub-row">
+                  <td class="ps-3 text-muted">Growth Rate %</td>
+                  <td class="text-end text-muted">—</td>
+                  {% for k in ['FY2','FY3','Y1','Y2','Y3','Y4','Y5'] %}
+                  <td class="text-end {% if results.growth_rate.get(k, 0) < 0 %}text-danger{% else %}text-success{% endif %}">
+                    {{ results.growth_rate.get(k, 0) }}%
+                  </td>
+                  {% endfor %}
+                </tr>
+
+                <!-- Gross Margin -->
+                <tr class="section-row">
+                  <td class="fw-semibold">Gross Margin</td>
+                  {% for k in yr_keys %}<td class="text-end">{{ results.gross_margin.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+                <tr class="sub-row">
+                  <td class="ps-3 text-muted">GM %</td>
+                  {% for k in yr_keys %}<td class="text-end text-muted">{{ results.gm_pct.get(k, 0) }}%</td>{% endfor %}
+                </tr>
+
+                <!-- SG&A -->
+                <tr>
+                  <td class="fw-semibold">SG&amp;A</td>
+                  {% for k in yr_keys %}<td class="text-end">{{ results.sga.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Operating Income -->
+                <tr class="section-row">
+                  <td class="fw-semibold">Operating Income</td>
+                  {% for k in yr_keys %}
+                  <td class="text-end fw-semibold {% if results.operating_income.get(k, 0) < 0 %}text-danger{% endif %}">
+                    {{ results.operating_income.get(k, 0) | fmt_num }}
+                  </td>
+                  {% endfor %}
+                </tr>
+
+                <!-- 1X Adjustments -->
+                <tr class="sub-row">
+                  <td class="ps-3 text-muted">1X / Adjustments</td>
+                  {% for k in yr_keys %}<td class="text-end text-muted">{{ results.adjustments.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Adj EBITDA (highlighted) -->
+                <tr class="ebitda-row">
+                  <td class="fw-bold">Adj. EBITDA</td>
+                  {% for k in yr_keys %}
+                  <td class="text-end fw-bold">{{ results.adj_ebitda.get(k, 0) | fmt_num }}</td>
+                  {% endfor %}
+                </tr>
+                <tr class="sub-row">
+                  <td class="ps-3 text-muted">EBITDA %</td>
+                  {% for k in yr_keys %}<td class="text-end text-muted">{{ results.ebitda_pct.get(k, 0) }}%</td>{% endfor %}
+                </tr>
+
+                <!-- Separator -->
+                <tr class="separator-row"><td colspan="9"></td></tr>
+
+                <!-- Interest -->
+                <tr>
+                  <td>Interest Expense</td>
+                  {% for k in yr_keys %}<td class="text-end">{{ results.interest_expense.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Depreciation (projections only) -->
+                <tr>
+                  <td>Depreciation / Amort.</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end text-muted">{{ results.depreciation.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Availability / CFADS -->
+                <tr class="section-row">
+                  <td class="fw-semibold">Availability (CFADS)</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end fw-semibold">{{ results.availability.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- CAPEX -->
+                <tr>
+                  <td class="text-muted">CAPEX</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end text-muted">{{ results.capex.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Separator -->
+                <tr class="separator-row"><td colspan="9"></td></tr>
+
+                <!-- ABL (proj) -->
+                <tr>
+                  <td>ABL (Interest)</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end">{{ results.abl_proj.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Term Repayment -->
+                <tr>
+                  <td>Term Loan Repayment</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end">{{ results.term_proj.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- EV at Exit -->
+                <tr>
+                  <td>EV at Exit</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end">{{ results.ev_at_exit.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- + Cash -->
+                <tr class="section-row">
+                  <td class="fw-semibold">+ Cash</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end fw-semibold">{{ results.plus_cash.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- LP/GP Split -->
+                <tr>
+                  <td>LP/GP Split</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end">{{ results.lp_gp_split.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Earnout Payments (highlighted) -->
+                <tr class="earnout-row">
+                  <td class="fw-bold">Earnout Payments</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end fw-bold">{{ results.earnout_payments.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- Separator -->
+                <tr class="separator-row"><td colspan="9"></td></tr>
+
+                <!-- Running Balance -->
+                <tr>
+                  <td class="text-muted">Running Balance</td>
+                  <td class="text-muted text-center" colspan="2">—</td>
+                  {% for k in ['FY3','Y1','Y2','Y3','Y4','Y5'] %}<td class="text-end text-muted">{{ results.running_balance.get(k, 0) | fmt_num }}</td>{% endfor %}
+                </tr>
+
+                <!-- DSCR (highlighted) -->
+                <tr class="dscr-row">
+                  <td class="fw-bold">Net Cash Flow (DSCR)</td>
+                  <td class="text-muted text-center" colspan="3">—</td>
+                  {% for k in ['Y1','Y2','Y3','Y4','Y5'] %}
+                  <td class="text-end fw-bold {% if results.dscr.get(k, 0) >= 1.2 %}text-success{% elif results.dscr.get(k, 0) >= 1.0 %}text-warning{% else %}text-danger{% endif %}">
+                    {{ results.dscr.get(k, 0) }}×
+                  </td>
+                  {% endfor %}
+                </tr>
+
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Validation summary -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header section-header">
+          <i class="bi bi-shield-check me-2"></i>Validation Summary
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <div class="validation-check {% if results.C57_fccr >= 1.0 %}pass{% else %}fail{% endif %}">
+                <i class="bi {% if results.C57_fccr >= 1.0 %}bi-check-circle-fill text-success{% else %}bi-x-circle-fill text-danger{% endif %} me-2"></i>
+                FCCR ≥ 1.0 &nbsp;<strong>{{ results.C57_fccr }}</strong>
+              </div>
+            </div>
+            <div class="col-md-4">
+              {% set avg_dscr = (results.dscr.get('Y1',0) + results.dscr.get('Y2',0) + results.dscr.get('Y3',0)) / 3 %}
+              <div class="validation-check {% if avg_dscr >= 1.0 %}pass{% else %}fail{% endif %}">
+                <i class="bi {% if avg_dscr >= 1.0 %}bi-check-circle-fill text-success{% else %}bi-x-circle-fill text-danger{% endif %} me-2"></i>
+                Avg DSCR Y1-Y3 &nbsp;<strong>{{ avg_dscr | round(2) }}×</strong>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="validation-check {% if results.balance_check | abs < 1 %}pass{% else %}fail{% endif %}">
+                <i class="bi {% if results.balance_check | abs < 1 %}bi-check-circle-fill text-success{% else %}bi-exclamation-circle-fill text-warning{% endif %} me-2"></i>
+                Sources = Uses &nbsp;<strong>Δ{{ results.balance_check }}</strong>
+              </div>
+            </div>
+            <div class="col-md-4">
+              {% set ebitda_pos = results.adj_ebitda.get('Y1', 0) > 0 %}
+              <div class="validation-check {% if ebitda_pos %}pass{% else %}fail{% endif %}">
+                <i class="bi {% if ebitda_pos %}bi-check-circle-fill text-success{% else %}bi-x-circle-fill text-danger{% endif %} me-2"></i>
+                Positive Adj. EBITDA Y1
+              </div>
+            </div>
+            <div class="col-md-4">
+              {% set gm_ok = results.gm_pct.get('FY3', 0) > 0 and results.gm_pct.get('FY3', 0) <= 100 %}
+              <div class="validation-check {% if gm_ok %}pass{% else %}fail{% endif %}">
+                <i class="bi {% if gm_ok %}bi-check-circle-fill text-success{% else %}bi-x-circle-fill text-danger{% endif %} me-2"></i>
+                GM% valid &nbsp;<strong>{{ results.gm_pct.get('FY3', 0) }}%</strong>
+              </div>
+            </div>
+            <div class="col-md-4">
+              {% set moic_ok = results.C29 > 0 %}
+              <div class="validation-check {% if moic_ok %}pass{% else %}fail{% endif %}">
+                <i class="bi {% if moic_ok %}bi-check-circle-fill text-success{% else %}bi-x-circle-fill text-danger{% endif %} me-2"></i>
+                MOIC &gt; 0 &nbsp;<strong>{{ results.C29 }}×</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Risk Analysis ──────────────────────────────────────────────────── -->
+{% if risk_analysis %}
+<div class="container-fluid px-4 pb-4">
+  <div class="card shadow-sm">
+    <div class="card-header section-header d-flex align-items-center justify-content-between">
+      <span><i class="bi bi-shield-exclamation me-2"></i>Risk Analysis</span>
+      <span class="badge bg-secondary" style="font-size:.65rem;">{{ risk_analysis|length }} factor(s)</span>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width:40%">Risk Factor</th>
+            <th style="width:12%">Category</th>
+            <th style="width:10%">Source</th>
+            <th style="width:13%">Confidence</th>
+            <th style="width:25%">Basis</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in risk_analysis %}
+          <tr>
+            <td class="small">{{ r.risk }}</td>
+            <td><span class="badge bg-secondary">{{ r.category }}</span></td>
+            <td>
+              {% if r.source == 'memo' %}
+                <span class="badge bg-success">Memo</span>
+              {% else %}
+                <span class="badge bg-info text-dark">General</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="progress" style="height:7px;" title="{{ (r.confidence * 100)|int }}%">
+                <div class="progress-bar {% if r.confidence >= 0.85 %}bg-success{% elif r.confidence >= 0.70 %}bg-warning{% else %}bg-danger{% endif %}"
+                     role="progressbar" style="width:{{ (r.confidence * 100)|int }}%"></div>
+              </div>
+              <small class="text-muted">{{ (r.confidence * 100)|int }}%</small>
+            </td>
+            <td class="small text-muted">{{ r.citation }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="px-3 py-2 text-muted" style="font-size:.7rem;">
+        <i class="bi bi-info-circle me-1"></i>
+        <strong>Memo</strong> risks are grounded in document data.
+        <strong>General</strong> risks reflect PE industry knowledge.
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
