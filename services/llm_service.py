@@ -383,6 +383,30 @@ def _detect_fiscal_years(ocr_text: str) -> tuple[int, int, int]:
     # Pre-compute all projection-suffix years from entire document (for Pass 2)
     proj_yrs_by_suffix = {int(m.group(1)) for m in proj_suffix_pat.finditer(ocr_text)}
 
+    # Extended suffix pattern — catches OCR-stripped variants where the
+    # suffix character was dropped entirely. Matches years that appear:
+    #   - on lines containing the words Forecast/Projection/Budget/Estimate
+    #     within 60 chars of the year (e.g. "FY2023 Forecast", "2023 (Budget)")
+    #   - or inside explicit section titles like "Five-Year Projections FY2023"
+    # These years are treated as projection years even without E/F/B/P character.
+    _proj_context_pat = re.compile(
+        r'(?<!\d)(20\d{2})(?!\d)[^\n]{0,60}'
+        r'(?:Forecast|Projection|Budget|Estimate|Outlook|Plan|Forward)'
+        r'|(?:Forecast|Projection|Budget|Estimate|Outlook|Plan|Forward)'
+        r'[^\n]{0,60}(?<!\d)(20\d{2})(?!\d)',
+        re.IGNORECASE
+    )
+    # Merge extended projection years into proj_yrs_by_suffix
+    for _m in _proj_context_pat.finditer(ocr_text):
+        _yr_str = _m.group(1) or _m.group(2)
+        if _yr_str:
+            _yr = int(_yr_str)
+            if 2000 <= _yr <= current_year + 10:
+                proj_yrs_by_suffix.add(_yr)
+    logger.info(
+        f"  proj_yrs_by_suffix after extended pattern: {sorted(proj_yrs_by_suffix)}"
+    )
+
     # Pre-compute confirmed historical years — those with A/Actual/Audited/Restated marker.
     # Used by Guard 2 below to verify that the chosen y3 is genuinely historical,
     # not a projection year that leaked through when the document omits E/F/B/P suffixes.
@@ -490,6 +514,37 @@ def _detect_fiscal_years(ocr_text: str) -> tuple[int, int, int]:
             most_recent_year = most_recent_year - 1  # last resort: step back one year
         logger.info(f"  FY detect Guard 2: corrected y3={most_recent_year}")
 
+    # Guard 3 — co-presence check: if most_recent_year-1 is a STRONGER
+    # historical candidate than most_recent_year, prefer it.
+    #
+    # Trigger conditions (ANY one sufficient):
+    #   (a) most_recent_year not in confirmed_hist_years
+    #       AND most_recent_year-1 in confirmed_hist_years
+    #       (prior year has explicit A/Actual/Audited marker, chosen year does not)
+    #   (b) most_recent_year in proj_yrs_by_suffix
+    #       AND most_recent_year-1 in table_counts
+    #       (chosen year ever appeared with E/F suffix, prior year is a real table header)
+    #
+    # Both conditions check that (most_recent_year - 1) is actually present
+    # as a table-header candidate before walking back — this prevents
+    # false walk-back on documents that genuinely have only 1 historical year.
+    _prior = most_recent_year - 1
+    _guard3_a = (
+        most_recent_year not in confirmed_hist_years
+        and _prior in confirmed_hist_years
+    )
+    _guard3_b = (
+        most_recent_year in proj_yrs_by_suffix
+        and _prior in table_counts
+    )
+    if _guard3_a or _guard3_b:
+        logger.info(
+            f"  FY detect Guard 3: most_recent_year={most_recent_year} "
+            f"(guard3_a={_guard3_a}, guard3_b={_guard3_b}) — "
+            f"prior year {_prior} is stronger historical candidate → walking back"
+        )
+        most_recent_year = _prior
+
     y3 = most_recent_year
     y2 = y3 - 1
     y1 = y3 - 2
@@ -574,6 +629,54 @@ COLLATERAL & DEBT FIELDS — IMPORTANT:
     the Asset Value column. Do NOT return the advance-rate-adjusted borrowing base.
     If the company is a pure leaseholder or gross value is $0, return 0 (not null).
 
+COLLATERAL EXTRACTION RULE (applies to inventory_collateral, me_equipment_collateral, building_land_collateral):
+  The collateral table has 4 columns:
+    Col 1 = Asset label
+    Col 2 = Gross Value       ← EXTRACT THIS
+    Col 3 = Advance Rate      (percentage — do NOT extract)
+    Col 4 = Borrowing Base    (= Col2 × Col3 — do NOT extract)
+  For each collateral asset row, ALWAYS extract the Gross Value (Col 2).
+  NEVER extract the Borrowing Base (Col 4).
+  Identification tip: Gross Value is always >= Borrowing Base for the same row.
+  If you see a number that equals (another collateral value × advance rate),
+  that is the Borrowing Base — skip it and use the larger gross value instead.
+
+  ANTI-ROW-SHIFT RULE: When extracting each collateral row, the number
+  you assign to an asset MUST appear on the SAME LINE as that asset's
+  label in the OCR text. Never carry a value from a previous row.
+  Verification step for each collateral asset:
+    1. Find the line that starts with the asset label (e.g. 'Inventory').
+    2. Read the numbers on THAT line only.
+    3. The Gross Value (Col 2) is the first large number on that line
+       before the advance rate percentage.
+  Warning sign: if the value you found for 'Inventory' matches the
+  result of (AR_gross_value × AR_advance_rate), you have a row shift.
+  In that case, re-read the table anchored to the 'Inventory' label line.
+
+ADJUSTMENTS / ADD-BACKS EXTRACTION:
+  Extract the TOTAL row (labeled 'Total Adjustments', 'Total Add-backs',
+  'Total Non-Recurring', 'Total Addbacks', etc.) for ALL THREE fiscal years.
+  CRITICAL: Do NOT extract from individual component rows (e.g. 'M&A Costs',
+  'COVID Relief', 'Legal Settlement'). These rows may be sparse — some years
+  may be blank on certain component lines. Only the TOTAL ROW has consistent
+  three-column values across fy1/fy2/fy3.
+  Validation: each year's adjustment total should be >= 0.
+  If the total row for a year is blank, return 0 (not null) for that year.
+
+INTEREST EXPENSE EXTRACTION:
+  interest_expense is a STANDALONE single row in the P&L, positioned
+  BELOW the Adjusted EBITDA line. It is NOT part of the add-backs block.
+  The "Do NOT extract from individual component rows" rule above applies
+  ONLY to the adjustments/add-backs block. It does NOT apply here.
+  Extract interest_expense_fy1, interest_expense_fy2, interest_expense_fy3
+  from ALL THREE fiscal year columns of this single row.
+  Accepted labels (case-insensitive):
+    'Interest Expense'  |  'Interest expense/(income)'
+    'Net Interest'      |  'Interest & Financing Costs'
+    'Interest Charges'  |  'Interest on Debt'
+  This field is subject to the normal year-column matching rules (Rule 7/8).
+  Extract all three years. Return null only if the row is genuinely absent.
+
 ════════════════════════════════════════════════════════════
 SECTION B — REVENUE IDENTIFICATION
 ════════════════════════════════════════════════════════════
@@ -614,10 +717,38 @@ ADJ. EBITDA LABEL MATCHING — check these in order before deriving:
     "Normalized EBITDA"  |  "Recurring EBITDA"
   Preferred source: the row immediately following a "Total Add-backs" or
     "Non-Recurring Adjustments" subtotal row.
-  Fallback derivation (use ONLY when none of the above labels exist):
+  Fallback derivation — try these options IN ORDER when direct label match fails:
+
+  Option 1 — EBITDA row present (preferred fallback):
+    adj_ebitda = EBITDA + adjustments
+    (EBITDA row labels: 'EBITDA', 'Earnings Before Interest Tax D&A', 'EBITDA (unadjusted)')
+    Set confidence = 0.80. Cite: "EBITDA row + adjustments"
+
+  Option 2 — Operating income + D&A row both present:
+    adj_ebitda = operating_income + depreciation_and_amortisation + adjustments
+    (D&A row labels: 'Depreciation', 'Amortisation', 'D&A', 'Depreciation & Amortization')
+    Set confidence = 0.75. Cite: "operating_income + D&A + adjustments"
+
+  Option 3 — Operating income only (last resort):
     adj_ebitda = operating_income + adjustments
     where operating_income = the EBIT / Operating Income / Operating Profit line
-    Set confidence = 0.75 for this derived value. Cite the formula.
+    WARNING: This formula omits D&A and will understate adj_ebitda.
+    Only use if Options 1 and 2 are both impossible.
+    Set confidence = 0.65. Cite: "operating_income + adjustments (D&A not found)"
+
+  SCAN ALL SECTIONS: When searching for adj_ebitda_fy1 and adj_ebitda_fy2,
+  check not only the main P&L table but also: deal overview, executive
+  summary, financial highlights, investment thesis, and any KPI summary box.
+  These sections often state historical Adj. EBITDA values inline in prose
+  (e.g. "Adjusted EBITDA grew from $8.1M in FY2021 to $9.7M in FY2022").
+  Extract ALL three years wherever found with highest confidence match.
+  Apply derivation fallback only if no direct value found anywhere.
+
+IMPORTANT: Extract adj_ebitda for ALL THREE fiscal years from the same row.
+  The Adjusted EBITDA row appears once in the P&L table with three year columns.
+  Return adj_ebitda_fy1, adj_ebitda_fy2, AND adj_ebitda_fy3 — do not return
+  only the most recent year. Map each year column by header match (not position):
+  fy1 column → adj_ebitda_fy1, fy2 column → adj_ebitda_fy2, fy3 column → adj_ebitda_fy3.
 
 ADJ. EBITDA CROSS-CHECK (run for every historical year):
   calc = gross_margin − sga + adjustments
@@ -660,8 +791,13 @@ Before writing your final JSON, verify each item:
   [ ] Restated column used when dual columns exist for same year
   [ ] Projection contamination guard applied
   [ ] Adj. EBITDA: checked all label variants before using derivation fallback
+  [ ] Adj. EBITDA: extracted all THREE years (fy1, fy2, fy3) from the same row — not just fy3
   [ ] existing_term_loans: returned outstanding balance, NOT the revolving ABL/revolver
   [ ] building_land_collateral: returned GROSS asset value, NOT advance-rate-adjusted borrowing base
+  [ ] inventory_collateral / me_equipment_collateral: returned Gross Value (Col 2), NOT Borrowing Base (Col 4)
+  [ ] adjustments: extracted TOTAL row for all three years, NOT individual component rows
+  [ ] interest_expense: standalone row below Adj EBITDA — extracted all THREE years — NOT subject to total-row-only rule
+  [ ] inventory_collateral: value confirmed on SAME LINE as 'Inventory' label — no row carry-forward from AR row
   [ ] E/F/B/P suffix columns: NOT mapped to historical slots (fy1/fy2/fy3)
   [ ] E/F/B/P suffix columns: ARE correctly mapped to proj_* slots (y1..y5)
 
