@@ -202,9 +202,9 @@
 
       {# Use LLM-extracted year labels; fall back to detected integer years from document #}
       {% set _dfy = detected_fy_years if detected_fy_years else [] %}
-      {% set fy1 = all_inputs.get('fy_year_1') or (_dfy[0]|string if _dfy|length >= 1 else 'FY1') %}
-      {% set fy2 = all_inputs.get('fy_year_2') or (_dfy[1]|string if _dfy|length >= 2 else 'FY2') %}
-      {% set fy3 = all_inputs.get('fy_year_3') or (_dfy[2]|string if _dfy|length >= 3 else 'FY3') %}
+      {% set fy1 = all_inputs.get('fy_year_1') or (_dfy[0]|int|string if _dfy|length >= 1 else 'FY1') %}
+      {% set fy2 = all_inputs.get('fy_year_2') or (_dfy[1]|int|string if _dfy|length >= 2 else 'FY2') %}
+      {% set fy3 = all_inputs.get('fy_year_3') or (_dfy[2]|int|string if _dfy|length >= 3 else 'FY3') %}
       {% set _fy3_int = detected_fy_years[2] if detected_fy_years and detected_fy_years|length >= 3 else 0 %}
       {% if _fy3_int %}
         {% set years = [fy1, fy2, fy3, 'FY' ~ (_fy3_int + 1), 'FY' ~ (_fy3_int + 2), 'FY' ~ (_fy3_int + 3), 'FY' ~ (_fy3_int + 4), 'FY' ~ (_fy3_int + 5)] %}

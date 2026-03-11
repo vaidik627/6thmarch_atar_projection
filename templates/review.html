@@ -195,6 +195,15 @@
               {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
             {% endfor %}
 
+            <!-- Adj. EBITDA — must be in form so C26 always uses fresh value, not stale session -->
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2 mt-3">Adjusted EBITDA (in $000s)</h6>
+            {% set _fy1_lbl = 'Adj. EBITDA – FY' ~ (detected_fy_years[0] if detected_fy_years is defined and detected_fy_years|length > 0 else 'FY1') %}
+            {% set _fy2_lbl = 'Adj. EBITDA – FY' ~ (detected_fy_years[1] if detected_fy_years is defined and detected_fy_years|length > 1 else 'FY2') %}
+            {% set _fy3_lbl = 'Adj. EBITDA – FY' ~ (detected_fy_years[2] if detected_fy_years is defined and detected_fy_years|length > 2 else 'FY3') %}
+            {% for field_key, field_label in [('adj_ebitda_fy1', _fy1_lbl),('adj_ebitda_fy2', _fy2_lbl),('adj_ebitda_fy3', _fy3_lbl)] %}
+              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% endfor %}
+
           </div>
         </div>
 
@@ -204,15 +213,33 @@
             <i class="bi bi-bank me-2"></i>Extracted — Collateral &amp; Sources
           </div>
           <div class="card-body p-3">
-            {# ENH-4: net_revenue_collateral defaults to revenue_fy3 when null #}
+            {# Null-collateral warning: show if 3+ of 4 balance-sheet collateral fields are missing #}
+            {% set _null_collateral_count = namespace(n=0) %}
+            {% if extracted.get('net_revenue_collateral') is none %}{% set _null_collateral_count.n = _null_collateral_count.n + 1 %}{% endif %}
+            {% if extracted.get('inventory_collateral') is none %}{% set _null_collateral_count.n = _null_collateral_count.n + 1 %}{% endif %}
+            {% if extracted.get('me_equipment_collateral') is none %}{% set _null_collateral_count.n = _null_collateral_count.n + 1 %}{% endif %}
+            {% if extracted.get('building_land_collateral') is none %}{% set _null_collateral_count.n = _null_collateral_count.n + 1 %}{% endif %}
+            {% if _null_collateral_count.n >= 3 %}
+            <div class="alert alert-warning py-2 mb-3 small">
+              <i class="bi bi-exclamation-triangle me-2"></i>
+              <strong>Collateral data not found in document.</strong>
+              This CIM may not include a balance sheet or fixed asset schedule.
+              Enter values manually: <strong>AR</strong> and <strong>Inventory</strong> from the company's most recent balance sheet;
+              <strong>M&amp;E</strong> and <strong>Building</strong> from the fixed asset schedule or PP&amp;E note in the financials.
+            </div>
+            {% endif %}
+
+            {# ENH-4 REMOVED: no longer defaults AR to revenue estimate — causes false positives on no-balance-sheet CIMs #}
             {% set nr_extracted = extracted.get('net_revenue_collateral') %}
             {% set nr_form = (form_data.get('net_revenue_collateral') if form_data is defined else none) %}
-            {% set nr_val = nr_form if nr_form is not none else (nr_extracted if nr_extracted is not none else extracted.get('revenue_fy3')) %}
+            {% set _ar_default = none %}
+            {% set nr_val = nr_form if nr_form is not none else (nr_extracted if nr_extracted is not none else _ar_default) %}
             {% set nr_conf = confidences.get('net_revenue_collateral', 0) %}
             {% set nr_flag = validation_flags.get('net_revenue_collateral', {}) %}
+            {% set _fy3_label = (extracted.get('fy_year_3') or detected_fy_years[2] if detected_fy_years and detected_fy_years|length > 2 else 'most recent year') %}
             <div class="extracted-field mb-2">
               <div class="d-flex align-items-center justify-content-between mb-1">
-                <label class="form-label small fw-semibold mb-0">Net Revenue Collateral ($000s)</label>
+                <label class="form-label small fw-semibold mb-0">AR / Net Revenue Collateral ($000s)</label>
                 {% if nr_extracted is not none %}
                   {% if nr_conf >= 0.85 %}<span class="badge bg-success badge-conf"><i class="bi bi-check-circle me-1"></i>{{ "%.0f"|format(nr_conf*100) }}%</span>
                   {% elif nr_conf >= 0.70 %}<span class="badge bg-warning text-dark badge-conf"><i class="bi bi-exclamation-circle me-1"></i>{{ "%.0f"|format(nr_conf*100) }}%</span>
@@ -225,16 +252,42 @@
               <input type="number" step="0.01" name="net_revenue_collateral"
                 class="form-control form-control-sm {% if nr_flag.get('status') == 'error' %}border-danger{% elif nr_flag.get('status') == 'warning' %}border-warning{% endif %}"
                 value="{{ nr_val if nr_val is not none else '' }}"
-                placeholder="Enter value in $000s">
-              <div class="form-text text-muted"><i class="bi bi-info-circle me-1"></i>Defaults to most recent year revenue when not found in document.</div>
+                placeholder="Accounts Receivable from balance sheet {{ _fy3_label }}">
+              <div class="form-text text-muted"><i class="bi bi-info-circle me-1"></i>Accounts Receivable from balance sheet (Current Assets section) — not P&amp;L revenue.</div>
             </div>
-            {% for field_key, field_label in [
-              ('inventory_collateral','Inventory Book Value ($000s)'),
-              ('me_equipment_collateral','M&E Equipment ($000s)'),
-              ('building_land_collateral','Building & Land ($000s)'),
-              ('existing_term_loans','Existing Term Loans ($000s)'),
+            {% for field_key, field_label, field_placeholder in [
+              ('inventory_collateral','Inventory Book Value ($000s)','Inventory from balance sheet — Current Assets'),
+              ('me_equipment_collateral','M&E Equipment ($000s)','M&E gross cost from fixed asset schedule'),
+              ('building_land_collateral','Building & Land ($000s)','Building gross cost from fixed asset schedule'),
+              ('existing_term_loans','Existing Term Loans ($000s)','Outstanding term loan balance — not revolving credit'),
             ] %}
-              {{ render_extracted_field(field_key, field_label, extracted, confidences, citations, validation_flags, manual_errors if manual_errors is defined else {}, form_data if form_data is defined else {}) }}
+            {% set _fv = extracted.get(field_key) %}
+            {% set _fc = confidences.get(field_key, 0) %}
+            {% set _fci = citations.get(field_key, '') %}
+            {% set _ff = validation_flags.get(field_key, {}) %}
+            {% set _ffs = _ff.get('status', 'ok') %}
+            {% set _form_fv = (form_data.get(field_key) if form_data is defined else none) %}
+            {% set _display_fv = _form_fv if _form_fv is not none else _fv %}
+            <div class="extracted-field mb-2">
+              <div class="d-flex align-items-center justify-content-between mb-1">
+                <label class="form-label small fw-semibold mb-0">{{ field_label }}</label>
+                {% if _fv is not none %}
+                  {% if _fc >= 0.85 %}<span class="badge bg-success badge-conf"><i class="bi bi-check-circle me-1"></i>{{ "%.0f"|format(_fc*100) }}%</span>
+                  {% elif _fc >= 0.70 %}<span class="badge bg-warning text-dark badge-conf"><i class="bi bi-exclamation-circle me-1"></i>{{ "%.0f"|format(_fc*100) }}%</span>
+                  {% else %}<span class="badge bg-danger badge-conf"><i class="bi bi-x-circle me-1"></i>{{ "%.0f"|format(_fc*100) }}%</span>
+                  {% endif %}
+                {% else %}
+                  <span class="badge bg-secondary badge-conf"><i class="bi bi-pencil me-1"></i>Manual</span>
+                {% endif %}
+              </div>
+              <input type="number" step="0.01" name="{{ field_key }}"
+                class="form-control form-control-sm {% if _ffs == 'error' %}border-danger{% elif _ffs == 'warning' %}border-warning{% endif %}"
+                value="{{ _display_fv if _display_fv is not none else '' }}"
+                placeholder="{{ field_placeholder }}">
+              {% if _fci %}
+              <div class="citation-snippet"><i class="bi bi-quote me-1"></i><em>{{ _fci[:120] }}{% if _fci|length > 120 %}…{% endif %}</em></div>
+              {% endif %}
+            </div>
             {% endfor %}
           </div>
         </div>
@@ -281,7 +334,18 @@
               <div class="col-4">
                 <input type="number" step="0.01" min="0" max="1" name="me_equipment_multiplier"
                   class="form-control form-control-sm"
-                  value="{{ form_data.get('me_equipment_multiplier', '0') if form_data is defined else '0' }}">
+                  value="{{ form_data.get('me_equipment_multiplier', '0.50') if form_data is defined else '0.50' }}">
+              </div>
+            </div>
+
+            <h6 class="fw-semibold text-muted small text-uppercase mb-2">Term Loan / Cashflow Leverage</h6>
+            <div class="row g-2 mb-3">
+              <div class="col-5">
+                <label class="form-label small">Leverage Multiple (×Adj. EBITDA)</label>
+                <input type="number" step="0.1" min="0" max="10" name="leverage_multiple"
+                  class="form-control form-control-sm"
+                  value="{{ form_data.get('leverage_multiple', '3.5') if form_data is defined else '3.5' }}">
+                <div class="form-text text-muted" style="font-size:0.7rem;">Used when no existing term loan is found in PDF</div>
               </div>
             </div>
 

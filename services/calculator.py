@@ -69,14 +69,30 @@ def run_calculations(inputs: dict) -> dict:
     E8 = C8 * D8  # Inventory source amount
 
     C9 = _f(inputs.get('me_equipment_collateral', 0))  # M&E Equipment
-    D9 = _f(inputs.get('me_equipment_multiplier', 0))
+    D9 = _f(inputs.get('me_equipment_multiplier', 0.50))
     E9 = C9 * D9
 
     C11 = _f(inputs.get('building_land_collateral', 0))  # Building & Land
     D11 = _f(inputs.get('building_land_multiplier', 0.50))
     E11 = C11 * D11
 
-    C12 = _f(inputs.get('existing_term_loans', 0))    # Term Loans/Cashflow loans
+    # Term Loans / Cashflow: use extracted balance if available;
+    # otherwise fall back to adj_ebitda_fy3 × leverage_multiple (user-configurable, default 3.5×).
+    # If adj_ebitda_fy3 is null/0, derive it from reported_ebitda_fy3 + adjustments_fy3 (PF EBITDA).
+    _existing_tl = inputs.get('existing_term_loans')
+    if _existing_tl is not None and _f(_existing_tl) > 0:
+        C12 = _f(_existing_tl)
+    else:
+        _leverage_mult = _f(inputs.get('leverage_multiple', 3.5))
+        _adj_ebitda3_raw = inputs.get('adj_ebitda_fy3')
+        _adj_ebitda3 = _f(_adj_ebitda3_raw) if _adj_ebitda3_raw is not None else 0.0
+        # If adj_ebitda_fy3 is null or 0, try to derive from reported_ebitda + adjustments
+        if _adj_ebitda3 == 0.0:
+            _rep3 = inputs.get('reported_ebitda_fy3')
+            _adjs3 = inputs.get('adjustments_fy3')
+            if _rep3 is not None and _adjs3 is not None:
+                _adj_ebitda3 = _f(_rep3) + _f(_adjs3)
+        C12 = round(_adj_ebitda3 * _leverage_mult, 2) if _adj_ebitda3 > 0 else 0.0
     E12 = C12
 
     C14 = _f(inputs.get('seller_note', 0))             # Seller Note

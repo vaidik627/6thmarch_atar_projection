@@ -46,7 +46,79 @@ Only these files may be changed. Do NOT touch anything else without explicit use
 
 ---
 
+## SOURCES SECTION — CURRENT STATUS (as of 2026-03-11)
+
+### What each Sources field is, how it's obtained, and its current state
+
+| Sources Line Item | How Obtained | Current Extraction State |
+|---|---|---|
+| Net Revenue (×0.75) | LLM extracts `net_revenue_collateral` = AR from Balance Sheet Dec-{yy3}A | ✅ Fixed 2026-03-11 — field description now says "Accounts Receivable from BALANCE SHEET"; Python guard nulls AR if AR=revenue exactly; ENH-4 revenue fallback removed |
+| Inventory (×0.7) | LLM extracts `inventory_collateral` from Balance Sheet single Inventory line | ⚠️ Sometimes reads 6,878 (correct), sometimes 6,147 (Dec-24A off-by-one) or 14,494 (borrowing base table) |
+| M&E Equipment (×0.50) | LLM extracts `me_equipment_collateral` = Net Book Value from Fixed Asset Schedule | ✅ Fixed in session 2026-03-11 — VALUE TREND rule: constant set = NBV |
+| Building & Land (×0.50) | LLM extracts `building_land_collateral` = Gross Cost from Fixed Asset Schedule | ✅ Fixed in session 2026-03-11 — CONSTANT ACROSS PERIODS rule identifies Gross Cost |
+| Term Loans / Cashflow | `existing_term_loans` if found, else `adj_ebitda_fy3 × leverage_multiple`; if adj_ebitda null, derives from reported_ebitda + adjustments | ✅ Fallback working; derivation fallback added 2026-03-11 |
+| Seller Note | Manual input only (`seller_note`) | Manual — no extraction needed |
+| Earnout | Manual input only (`earnout`) | Manual — no extraction needed |
+| Equity Roll From Seller | Manual input only (`equity_roll_from_seller`) | Manual — no extraction needed |
+
+### Calculator defaults (review.html form defaults + calculator.py)
+- `net_revenue_multiplier` = 0.75
+- `inventory_multiplier` = 0.70
+- `me_equipment_multiplier` = **0.50** (was 0, fixed 2026-03-11)
+- `building_land_multiplier` = 0.50
+- `leverage_multiple` = **3.5** (new field added 2026-03-11, for Term Loans fallback)
+
+---
+
+## COLLATERAL EXTRACTION RULES (DO NOT CHANGE THESE)
+
+These rules govern `services/llm_service.py` — the COLLATERAL & BALANCE SHEET EXTRACTION section.
+All rules must be general (no document-specific hardcoding).
+
+### Fixed Asset Schedule — ROW-LABEL-FIRST Rules (updated 2026-03-11)
+The Polytek / typical manufacturing CIM Fixed Asset Schedule shows ONE value series per row (Gross Cost only — no per-asset NBV column):
+```
+Asset               | Dec-23A | Dec-24A | Dec-25A |
+Warehouse Equipment |  14,067 |  14,431 |  14,634 |  ← INCREASING (correct M&E Gross Cost)
+Building            |   3,250 |   3,250 |   3,250 |  ← CONSTANT (correct Building Gross Cost)
+Total Net PP&E      |  13,789 |  11,782 |  10,116 |  ← combined NBV only, not per-asset
+```
+**M&E extraction rule**: Find the row labeled "Warehouse Equipment"/"Machinery & Equipment"/"M&E"/"Equipment" → extract the MOST RECENT historical year value. Do NOT skip because values are increasing — increasing IS the correct Gross Cost.
+
+**Building extraction rule**: Find the row labeled "Building"/"Land"/"Real Estate"/"Property" → extract the MOST RECENT historical year value. Values are often constant — this is correct.
+
+**Critical fixes (2026-03-11)**: Removed VALUE PATTERN RULE (constant=NBV) and SIZE RULE (building≥M&E). Both caused M&E/Building swap in Polytek where Building=3,250 < M&E=14,634.
+
+### Inventory Source Priority
+- Use **Balance Sheet** single "Inventory" or "Inventories" line for Dec-{yy3}A
+- Do NOT use Borrowing Base table Gross Value column (inflated lending basis > book value)
+- Do NOT use Inventory Detail sub-schedule total (may include gross before reserves)
+- MULTIPLE TABLES: if two values visible for same period → use the SMALLER (net/book value)
+- AR and Inventory MAY coincidentally have the same value in some documents — this is acceptable if each was independently confirmed from its own labeled row. Do NOT force them to differ.
+
+### Term Loans Fallback
+In `calculator.py`, `existing_term_loans` fallback:
+```python
+if existing_term_loans is not None and existing_term_loans > 0:
+    C12 = existing_term_loans
+else:
+    C12 = adj_ebitda_fy3 × leverage_multiple  # leverage_multiple default = 3.5
+```
+
+### Adj. EBITDA Projection Contamination Guard
+Multi-year P&L tables (e.g. FY22|FY23|FY24|FY25|Y1|Y2|Y3 = 7 columns) must NOT have adj_ebitda_fy3 read from Y1/Y2/Y3 (projection columns). Rule: adj_ebitda_fy{N} must come ONLY from the column whose header matches {fyN} or Dec-{yyN}A. See ADJ. EBITDA PROJECTION CONTAMINATION GUARD block in `_build_extraction_prompt()`.
+
+---
+
 ## COMPLETED TASKS
+
+- [x] ADJ-EBITDA-DEEPER-FIX-2026-03-11: Fixed adj_ebitda_fy3 contamination that survived the first fix (66K→231K Term Loans on Manta Ray). Root cause: HARD GUARD requires reported+adjustments non-null but both were null in latest run; confidence=0.60 passed the 0.60 threshold. (FIX-A) Added adj_ebitda CONFIDENCE GUARD in `llm_service.py`: any adj_ebitda with confidence < 0.70 is nulled (stricter than system-wide 0.60). (FIX-B) `calculator.py` Term Loans fallback now derives adj_ebitda from reported_ebitda_fy3 + adjustments_fy3 when adj_ebitda_fy3 is null/0 — enables PF EBITDA recovery even when adj_ebitda extraction fails. (FIX-C) Strengthened "Reported EBITDA" prompt block: added label variants (Reported EBITDA, Standalone EBITDA, Company EBITDA), explicit negative-value allowance, all-three-years requirement; updated FAIL rule to allow adj_ebitda > 0 when reported_ebitda < 0.
+
+- [x] DYNAMIC-SOURCES-FIX-2026-03-11: 6 fixes across `llm_service.py` + `review.html` to make Sources extraction work for ANY CIM. (FIX-1) AR field description changed from ambiguous "Net revenue value as collateral" to explicit "Accounts Receivable from BALANCE SHEET — NOT P&L Revenue" with label variants listed. (FIX-2a) adj_ebitda schema descriptions now include "CRITICAL: Extract ONLY from historical fy column — NEVER from E/F/P/B projection columns". (FIX-2b) Python HARD GUARD added: if adj_ebitda_fy3 differs >200% from (reported_ebitda + adjustments), auto-corrects to calculated value (catches projection contamination like Manta Ray 41K→7K). (FIX-2c) Second example added to contamination guard block showing $M document with negative EBITDA and E/P suffix columns. (FIX-3) COLLATERAL SOURCE PRIORITY M&E line updated from "NET BOOK VALUE" to "value from M&E-labeled row; prefer NBV if shown, else use Gross Cost". (FIX-4) ENH-4 smart default removed from review.html — AR no longer pre-fills from revenue_fy3/12×1.5 (caused false 180,750 on Manta Ray no-balance-sheet CIM). (FIX-5) Python guard: AR = revenue_fy3 exactly → null (LLM confused P&L with balance sheet). (FIX-6) Two new Section E checklist items for AR source and adj_ebitda column verification.
+
+- [x] COLLATERAL-ROW-LABEL-FIX-2026-03-11: Fixed M&E / Building swap in `services/llm_service.py` only. Root cause: VALUE PATTERN RULE (constant values = M&E NBV) incorrectly assigned Building's constant Gross Cost (3,250) to M&E and M&E's increasing Gross Cost (14,634) to Building — a complete swap. (FIX-1) Replaced VALUE PATTERN RULE in M&E block (lines 976-985) with ROW-LABEL-FIRST RULE: find row labeled "Warehouse Equipment"/"M&E"/"Equipment"/"Machinery", extract most recent year column, accept increasing values as Gross Cost. (FIX-2) Replaced VALUE PATTERN RULE and SIZE RULE in Building block (lines 999-1010) with ROW-LABEL-FIRST RULE: find row labeled "Building"/"Land"/"Real Estate", extract most recent year column, do NOT require building >= M&E. (FIX-3) Updated Section E checklist: removed 7 old M&E/Building items with wrong column rules, replaced with 4 items enforcing row-label matching. Expected result: me_equipment_collateral=14,634 (→$7,317.00), building_land_collateral=3,250 (→$1,625.00).
+
+- [x] SOURCES-FIX-SESSION-2026-03-11: 7 targeted fixes across `services/llm_service.py`, `services/calculator.py`, `templates/review.html` to make the Sources section extract correctly. (FIX-1) M&E multiplier default changed from 0 to 0.50 in both `review.html` and `calculator.py`. (FIX-2) `leverage_multiple` input field added to review.html (default 3.5) for Term Loans fallback. (FIX-3) Term Loans fallback formula added to `calculator.py`: if `existing_term_loans` is null/0, C12 = `adj_ebitda_fy3 × leverage_multiple`. (FIX-4) ADJ. EBITDA PROJECTION CONTAMINATION GUARD added to `_build_extraction_prompt()`: prevents LLM reading from Y1/Y2/Y3 projection columns in 7-column multi-year tables; includes concrete Polytek example (8,581 from FY25, NOT 13,624 from Y2). (FIX-5) COLLATERAL SOURCE PRIORITY block added to prompt: routes each field to correct source (AR → balance sheet, Inventory → balance sheet NOT borrowing base table, M&E → Fixed Asset Schedule NBV, Building → Fixed Asset Schedule Gross Cost). (FIX-6) VALUE TREND rule for M&E: "INCREASING values across periods = Gross Cost — do NOT use; CONSTANT/DECREASING = Net Book Value — use these." (FIX-7) CONSTANT PERIOD VALUES rule for Building: "Building Gross Cost is CONSTANT across periods — find the row where all period values are IDENTICAL; if values are INCREASING you are on the M&E row, not Building." (FIX-8) Inventory NO-ASSUMPTION RULE refined: removed "almost always have DIFFERENT values" phrase (which caused LLM to reject correct inventory=6,878 when it coincidentally equaled AR=6,878); replaced with "may coincidentally have same value — acceptable if each confirmed from own labeled row."
 
 - [x] FY-DETECT-FIX2: 2 targeted fixes to `_detect_fiscal_years()` in `services/llm_service.py` only. Root cause: Titan CIM has FY2020-FY2022 historical + FY2023E-FY2025E projections; OCR strips 'E' suffix producing bare 'FY2023', which bypasses Guard 2 (requires proj_yrs_by_suffix membership). (FIX-1) Guard 3 co-presence check inserted after Guard 2: walks back most_recent_year if (a) prior year has confirmed A/Actual marker and chosen year does not, OR (b) chosen year ever appeared with E/F suffix and prior year is a real table-header candidate; uses `_guard3_a` / `_guard3_b` flags with full logger.info diagnostics. (FIX-2) Extended projection-suffix pattern `_proj_context_pat` inserted immediately after the `proj_yrs_by_suffix` set-comprehension line: regex matches years co-occurring within 60 chars of Forecast/Projection/Budget/Estimate/Outlook/Plan/Forward keywords in either order; merged into `proj_yrs_by_suffix` so Guard 2 and Guard 3(b) can fire even when the 'E' character was OCR-dropped; logged as "proj_yrs_by_suffix after extended pattern". Expected result on Titan CIM: fy1=2020 fy2=2021 fy3=2022. No other functions changed.
 

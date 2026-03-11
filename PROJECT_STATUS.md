@@ -1,6 +1,6 @@
 # Atar Capital — Prebid Analysis System
 ## Project Status & Architecture Reference
-**Last Updated:** 2026-03-06 (session 4 — LLM V3 extraction engine + hotfixes)
+**Last Updated:** 2026-03-11 (session 5 — Sources section collateral extraction fixes)
 > Give this file to Claude (web or API) so it can understand the full project and make accurate modifications.
 
 ---
@@ -489,12 +489,76 @@ App runs at **http://localhost:5000**
 - [x] BUG-ALL-ZEROS (B-2) — Analysis page showing all zeros fixed: (1) `safe_float()` added to `app.py` — strips commas, never returns `0` for empty fields; (2) `/calculate` form merge changed to smart overlay — empty form fields no longer override extracted LLM values; (3) `_f()` in `calculator.py` updated to strip commas so `'23,500'` correctly converts to `23500.0`; (4) `safe_num()` added to `calculator.py` (`app.py`, `calculator.py`, `validator.py`)
 - [x] LLM-V3-EXTRACTION — `_extract_financial_sections()` replaced with dual-axis scoring (keyword density + numeric table density); force-includes window with highest numeric score; `_unpack_extraction()` helper added; Pass 3 inserted into `extract_financial_fields()` (triggers when `revenue_fy3` null, re-runs LLM on top-3 numeric windows); CAGR base in `fill_missing_projections()` uses `rev3→rev2→rev1` fallback chain with `base_years_back` offset; debug JSON enhanced with `pass3_triggered`, `fields_null_after_merge`, per-year revenue snapshots (`llm_service.py`)
 - [x] LLM-V3-HOTFIXES — (1) `generate_risk_analysis()` `NameError: client` fixed — added `client = OpenAI(...)` as first line; (2) `WINDOW` increased from `500` to `1500` chars; (3) dense-block numeric bonus added — if ≥8 lines with any number in window → `+5` to `numeric_score`; (4) all 9 `print()` calls replaced with `logger.info()` / `logger.warning()` (`llm_service.py`)
+- [x] SOURCES-COLLATERAL-FIX (session 2026-03-11) — 8 prompt/code fixes to make Sources section extract correctly from real CIM PDFs. See CLAUDE.md SOURCES-FIX-SESSION-2026-03-11 for full details. Key fixes: M&E multiplier default 0→0.50; leverage_multiple input (default 3.5) + Term Loans fallback formula; ADJ. EBITDA PROJECTION CONTAMINATION GUARD (7-column table guard with Polytek example); COLLATERAL SOURCE PRIORITY (Balance Sheet > Borrowing Base Table for all fields); VALUE TREND rule for M&E (increasing=Gross Cost, constant=NBV); CONSTANT PERIOD VALUES rule for Building (constant across periods=Gross Cost, increasing=M&E row); Inventory NO-ASSUMPTION RULE refined (removed false "different values" constraint that caused LLM to reject correct inventory value matching AR).
+
+---
+
+## 13. Sources Section — Architecture Reference
+
+### What the Sources section represents (ABL/acquisition financing structure)
+The Sources section in Prebid V31 Template shows how the acquisition is financed.
+Each line is a collateral asset multiplied by an advance rate = lending capacity.
+
+### Field-by-field extraction and calculation
+
+| Sources Line | Form Field | LLM Field | How Calculated | Correct Value (Polytek) |
+|---|---|---|---|---|
+| Net Revenue | `net_revenue_collateral` × `net_revenue_multiplier` (0.75) | `net_revenue_collateral` = AR from Balance Sheet | Extracted | 6,878 × 0.75 = 5,158.50 |
+| Inventory | `inventory_collateral` × `inventory_multiplier` (0.70) | `inventory_collateral` = Inventory from Balance Sheet | Extracted | 6,878 × 0.70 = 4,814.60 |
+| M&E Equipment | `me_equipment_collateral` × `me_equipment_multiplier` (0.50) | `me_equipment_collateral` = Net Book Value from Fixed Asset Schedule | Extracted | 3,250 × 0.50 = 1,625.00 |
+| Building & Land | `building_land_collateral` × `building_land_multiplier` (0.50) | `building_land_collateral` = Gross Cost from Fixed Asset Schedule | Extracted | 14,067 × 0.50 = 7,033.50 |
+| Term Loans / Cashflow | `existing_term_loans` OR fallback | `existing_term_loans` from debt schedule | Extracted or calculated | null → 8,581 × 3.5 = 30,033.50 |
+| Seller Note | `seller_note` | None | Manual input | 0.00 |
+| Earnout | `earnout` | None | Manual input | 0.00 |
+| Equity Roll From Seller | `equity_roll_from_seller` | None | Manual input | 0.00 |
+
+### Fixed Asset Schedule — How to read it correctly
+A CIM Fixed Asset Schedule shows historical cost, accumulated depreciation, and net book value:
+```
+Asset               | Gross Cost | Accum. Depr. | Net Book Value
+Warehouse Equipment |    14,634  |   (11,384)   |       3,250
+Building            |    14,067  |      (xxx)   |       3,250
+```
+**Rule for M&E**: Extract NET BOOK VALUE (= Cost − Accum. Depr.) — realistic liquidation proxy.
+  - Identification signal: NBV is CONSTANT or DECREASING across periods (equipment is depreciated).
+  - The INCREASING set of values across periods (14,067→14,431→14,634) = Gross Cost — ignore.
+
+**Rule for Building**: Extract GROSS COST (= original purchase price) — real estate doesn't depreciate in market value.
+  - Identification signal: Building Gross Cost is CONSTANT across periods (same every year).
+  - If values on "Building" row are INCREASING → you are on the M&E row by mistake.
+
+### Term Loans fallback formula (calculator.py)
+```python
+_existing_tl = inputs.get('existing_term_loans')
+if _existing_tl is not None and _f(_existing_tl) > 0:
+    C12 = _f(_existing_tl)
+else:
+    _leverage_mult = _f(inputs.get('leverage_multiple', 3.5))
+    _adj_ebitda3 = _f(inputs.get('adj_ebitda_fy3', 0))
+    C12 = round(_adj_ebitda3 * _leverage_mult, 2) if _adj_ebitda3 > 0 else 0.0
+E12 = C12
+```
+
+### Adj. EBITDA Projection Contamination (7-column tables)
+Some CIM P&L tables show BOTH historical and projection years in the same row:
+```
+FY22 | FY23 | FY24 | FY25 | Y1   | Y2   | Y3
+15,044 | 21,632 | 10,918 | 8,581 | 9,324 | 13,624 | 19,395
+```
+Rule: `adj_ebitda_fy3` must come from FY25 (position 4 = 8,581), NOT Y2 (position 6 = 13,624).
+The prompt includes an explicit example with these exact Polytek values as a general illustration.
+
+### Anti-hallucination trap: Inventory = AR value
+In Polytek, AR = 6,878 AND Inventory = 6,878 (same value coincidentally).
+A previous anti-hallucination rule said "AR and Inventory almost always have DIFFERENT values" — this caused the LLM to REJECT the correct inventory (6,878) because it matched AR, then pick 14,494 instead.
+**Fix**: The rule now says "may coincidentally have the same value — acceptable if each was independently confirmed from its own labeled row."
 
 ---
 
 ## 12. Known Behaviours / Edge Cases
 
 - **LLM non-determinism**: Even at `temperature=0`, NVIDIA NIM can return slightly different results across runs. This is normal — the review page exists to let analysts correct any wrong values.
+- **Collateral extraction variability**: M&E and Building extractions are the most LLM-sensitive fields due to Fixed Asset Schedule ambiguity. The value-trend rules (M&E=constant/decreasing, Building=constant across periods) are more reliable than column-header matching (OCR often strips headers). If wrong values appear, check the extraction JSON citations — they reveal exactly which number the LLM read and from where.
 - **SGA null on simple PDFs**: Documents without an explicit SG&A row will have null SGA. This is correct — no SGA row means operating income = gross margin, which produces valid EBITDA.
 - **OCR quality varies**: Google Document AI handles tables well but complex multi-column layouts may produce less-structured text. The `_extract_financial_sections()` scoring ensures the most financially-dense sections are prioritised.
 - **Large PDFs (>30 pages)**: Text is condensed to 30k chars using dual-axis window scoring (keyword density + numeric table density). Pass 2 runs on the second half if any fields are null. Pass 3 runs on top-3 numerically-dense windows if `revenue_fy3` is still null.

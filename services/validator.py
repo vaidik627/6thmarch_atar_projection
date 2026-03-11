@@ -5,7 +5,7 @@ Validates LLM extracted fields and manual inputs before calculation.
 
 # Confidence thresholds
 HIGH_CONFIDENCE = 0.85
-MEDIUM_CONFIDENCE = 0.70
+MEDIUM_CONFIDENCE = 0.60
 
 # Reasonable financial ranges (in thousands USD)
 REVENUE_MIN = 100          # $100K
