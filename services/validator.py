@@ -96,6 +96,76 @@ def validate_extracted_fields(extracted: dict, confidences: dict) -> dict:
                     'message': f'Calculated EBITDA ({calc:,.0f}) differs {pct_diff:.0%} from document-stated ({doc_ebitda:,.0f}). Check GM or SG&A.',
                 }
 
+    # ── V-GP-1 through V-GP-7: Gross Profit validation checks ────────────────
+    for _n in (1, 2, 3):
+        _gp   = _num(extracted.get(f'gross_margin_fy{_n}'))
+        _rev  = _num(extracted.get(f'revenue_fy{_n}'))
+        _cogs = _num(extracted.get(f'cogs_fy{_n}'))
+
+        # V-GP-1: GP < Revenue (CRITICAL)
+        if _gp is not None and _rev is not None and _rev > 0 and _gp > _rev:
+            flags[f'gross_margin_fy{_n}'] = {
+                'status': 'error',
+                'message': f'GP ({_gp:,.0f}) exceeds Revenue ({_rev:,.0f}). Extraction error — verify row.'
+            }
+
+        # V-GP-2: GP > 0
+        elif _gp is not None and _gp < 0:
+            flags[f'gross_margin_fy{_n}'] = {
+                'status': 'warning',
+                'message': f'Negative GP ({_gp:,.0f}) for FY{_n}. Review COGS extraction.'
+            }
+
+        # V-GP-3: GP margin 5%–95%
+        elif _gp is not None and _rev is not None and _rev > 0:
+            _margin = _gp / _rev
+            if not (0.05 <= _margin <= 0.95):
+                flags.setdefault(f'gross_margin_fy{_n}', {
+                    'status': 'warning',
+                    'message': f'GP margin {_margin:.1%} outside 5–95% band for FY{_n}. Review.'
+                })
+
+        # V-GP-4: GP + COGS ≈ Revenue (within 2%)
+        if _gp is not None and _cogs is not None and _rev is not None and _rev > 0:
+            _diff = abs(_gp + _cogs - _rev) / _rev
+            if _diff > 0.02:
+                flags[f'cogs_fy{_n}'] = {
+                    'status': 'warning',
+                    'message': f'GP + COGS ({_gp + _cogs:,.0f}) ≠ Revenue ({_rev:,.0f}) — {_diff:.1%} gap.'
+                }
+
+    # V-GP-5: Year-over-year GP margin consistency (>20pp swing)
+    _margins_hist = []
+    for _n in (1, 2, 3):
+        _gp  = _num(extracted.get(f'gross_margin_fy{_n}'))
+        _rev = _num(extracted.get(f'revenue_fy{_n}'))
+        _margins_hist.append(_gp / _rev if (_gp is not None and _rev and _rev > 0) else None)
+    for _i in range(len(_margins_hist) - 1):
+        _m1, _m2 = _margins_hist[_i], _margins_hist[_i + 1]
+        if _m1 is not None and _m2 is not None and abs(_m2 - _m1) > 0.20:
+            flags[f'gross_margin_fy{_i + 2}'] = {
+                'status': 'warning',
+                'message': f'GP margin swung {abs(_m2 - _m1):.1%} year-over-year. Possible table error.'
+            }
+
+    # V-GP-6: gp_source must be set
+    if not extracted.get('gp_source'):
+        flags['gp_source'] = {
+            'status': 'error',
+            'message': 'gp_source not set after GP pipeline. Internal error.'
+        }
+
+    # V-GP-7: Proj GP < Proj Revenue
+    for _i in range(1, 6):
+        _pgp  = _num(extracted.get(f'proj_gp_y{_i}'))
+        _prev = _num(extracted.get(f'proj_revenue_y{_i}'))
+        if _pgp is not None and _prev is not None and _prev > 0 and _pgp > _prev:
+            flags[f'proj_gp_y{_i}'] = {
+                'status': 'error',
+                'message': f'Projected GP ({_pgp:,.0f}) exceeds Proj Revenue ({_prev:,.0f}) Y{_i}.'
+            }
+    # ── END V-GP checks ───────────────────────────────────────────────────────
+
     return flags
 
 

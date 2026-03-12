@@ -112,7 +112,7 @@ def generate_excel(all_inputs: dict, results: dict, detected_fy_years: list) -> 
         gm  = _f(all_inputs.get(f'gross_margin_fy{n}'))
         sg  = _f(all_inputs.get(f'sga_fy{n}'))
         adj = _f(all_inputs.get(f'adjustments_fy{n}', 0))
-        return round(gm - sg + adj, 2) if gm else 0.0
+        return round(gm - sg + adj, 2) if gm is not None else 0.0
 
     ebitda_fy3 = _f(all_inputs.get('adj_ebitda_fy3'))
     ebitda_fy2 = _f(all_inputs.get('adj_ebitda_fy2'))
@@ -134,7 +134,7 @@ def generate_excel(all_inputs: dict, results: dict, detected_fy_years: list) -> 
     else:
         ws['C26'] = 0.0
         logger.warning("  Excel C26: all EBITDA sources null — C26 set to 0")
-    ws['C27'] = _f(all_inputs.get('acquisition_multiple', 7.0))   # EV/EBITDA deal multiple
+    ws['C27'] = _f(all_inputs.get('acquisition_multiple', 5.0))   # EV/EBITDA deal multiple (Jira: default 5x)
     ws['C28'] = _f(all_inputs.get('pct_acquired', 1.0))            # % of company acquired
     ws['C40'] = 6  # Exit Multiple (fixed)
 

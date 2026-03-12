@@ -1,6 +1,6 @@
 # Atar Capital — Prebid Analysis System
 ## Project Status & Architecture Reference
-**Last Updated:** 2026-03-11 (session 5 — Sources section collateral extraction fixes)
+**Last Updated:** 2026-03-12 (session 8 — Sprint 1 v2 + Sprint 2 prompt fixes; Jira defaults task; CLIENT_REPORT.md)
 > Give this file to Claude (web or API) so it can understand the full project and make accurate modifications.
 
 ---
@@ -40,6 +40,7 @@ project_root/
 ├── app.py                          # Flask routes + template filters
 ├── CLAUDE.md                       # Claude Code instructions (DO NOT MODIFY)
 ├── PROJECT_STATUS.md               # This file
+├── CLIENT_REPORT.md                # Short client-facing system report (session 8)
 ├── Prebid V31  Template.xlsx       # Excel template (DO NOT MODIFY)
 ├── requirements.txt                # Pinned dependencies (DO NOT MODIFY)
 ├── .env                            # Credentials (NEVER read or commit)
@@ -128,12 +129,13 @@ Detects 3 consecutive historical fiscal years from the document.
   - Example: document has FY2020–FY2024 → fy3=2024, fy2=2023, fy1=2022
 
 #### `_build_extraction_prompt(text, fy_years) → str`
-Builds the per-call extraction prompt. Structured into 6 sections (A–F):
-- **A — FISCAL YEAR MAPPING**: Injects y1/y2/y3 with full+short-form aliases (`FY{yy}`, `FY'{yy}`, `'{yy}`, `{y}A`, `{y} Actual`); 4-step COLUMN ASSIGNMENT RULE (header-match, not positional); COLUMNS TO IGNORE list (LTM, TTM, etc.); RESTATED priority order
-- **B — REVENUE IDENTIFICATION**: Forbidden sub-revenue labels, selection rule (highest value wins), position rule (appears before COGS)
-- **C — FORMULA DERIVATION CHAIN**: adj_ebitda = GM − SGA + adjustments; EBITDA cross-check
-- **D — PROJECTION EXTRACTION RULES**: Temporal guard — projection years must be > fy3
-- **E — ANTI-HALLUCINATION SELF-CHECK**: 10 items (includes: no positional assignment, no LTM/TTM, restated check, contamination guard)
+Builds the per-call extraction prompt. Structured into **7 sections (A–G + F)**:
+- **A — FISCAL YEAR MAPPING**: Injects y1/y2/y3 with full+short-form aliases; 4-step COLUMN ASSIGNMENT RULE; COLUMNS TO IGNORE list; RESTATED priority order; **YEAR-ANCHOR ENFORCEMENT** (Sprint 2 BUG-C7) — forces header-match for every field in 4+ column tables, generalizable self-check
+- **B — REVENUE IDENTIFICATION**: Forbidden sub-revenue labels; selection rule (highest value wins); position rule (appears before COGS); CROSS-TABLE CONSOLIDATION CHECK; **CONSOLIDATED REVENUE RULE** (Sprint 1 FIX-1) — 3-step anti-segment trap; **COGS EXTRACTION RULE** (Sprint 1 FIX-2) — total line only, GM plausibility check (10–85%); **SGA ROW SELECTION RULE** (Sprint 1 FIX-3) — size/label check; **SGA SIZE CHECK SCOPE RESTRICTION** (Sprint 2 BUG-C9) — percentage guard applies only to sga_fy1/2/3, NOT proj_sga
+- **C — FORMULA DERIVATION CHAIN**: adj_ebitda = GM − SGA + adjustments; EBITDA 5-tier extraction priority; EBITDA cross-check; **ADJUSTMENTS CROSS-CHECK RULE** (Sprint 2 BUG-C10) — back-derives adjustments_fyN from adj_ebitda − reported_ebitda when stated value fails >10% reconciliation
+- **D — PROJECTION EXTRACTION RULES**: Temporal guard; PROJECTION COUNT RULE (LLM must count labeled columns before extracting)
+- **E — ANTI-HALLUCINATION SELF-CHECK**: 20+ items
+- **G — COLLATERAL FIELD EXTRACTION RULES**: Balance-sheet-only sourcing for all 4 collateral fields; DSO sanity check; inventory single-line rule; M&E NBV-preferred; building Gross Cost rule; **FIXED ASSET PERIOD LOCK** (Sprint 1 FIX-5) — always use fy3 column; **FIXED ASSET SELF-VERIFICATION SWAP DETECTION** (Sprint 2 BUG-C8) — 3-step post-extraction trend test; if M&E row is not increasing or Building row is not constant → swap and re-assign
 - **F — OUTPUT JSON SCHEMA**: Hardcoded with detected year integers as `fy_year_1/2/3` values
 
 #### `_extract_financial_sections(ocr_text, target_chars) → str`
@@ -225,7 +227,7 @@ Replicates Prebid V31 Template.xlsx formulas. All values in $000s.
 |---|---|
 | Sources collateral | `net_revenue_collateral`, `inventory_collateral`, `me_equipment_collateral`, `building_land_collateral`, `existing_term_loans`, `seller_note`, `earnout`, `equity_roll_from_seller` |
 | Advance rates | `net_revenue_multiplier` (0.75), `inventory_multiplier` (0.70), `me_equipment_multiplier` (0), `building_land_multiplier` (0.50) |
-| Deal terms | `transaction_fees_total`, `working_capital_change` (7), `cfads_factor` (1), `acquisition_multiple` (7.0), `pct_acquired` (1.0) |
+| Deal terms | `transaction_fees_total`, `working_capital_change` (7), `cfads_factor` (1), `acquisition_multiple` (**5.0** — Jira default updated), `pct_acquired` (1.0) |
 | Rate params | `capex_pct_availability` (0.30), `depreciation_rate` (0.045), `mgmt_ltip_rate` (0.055), `atar_ownership_rate` (0.05), `return_of_equity_years` (3), `atar_repayment_years` (4), `lp_pct` (0.03), `preferred_pct` (0.05), `fccr_rate` (0.08), `remaining_cash_pct` (0.75) |
 | Transaction fees | `debt_sourcing_rate` (0.0075), `lawyers_rate` (0.0075), `qof_e_diligence`, `tax_fee`, `rw_insurance`, `atar_bonuses_senior`, `atar_bonuses_junior`, `project_other` |
 | Historical P&L | `revenue_fy1/2/3`, `gross_margin_fy1/2/3`, `sga_fy1/2/3`, `interest_expense_fy1/2/3`, `adjustments_fy1/2/3` |
@@ -297,7 +299,7 @@ Loads `Prebid V31  Template.xlsx`, fills ~70 INPUT cells, leaves formula cells u
 | C7–C18 | Collateral values (sources) |
 | D7–D11 | Advance rate multipliers |
 | C26 | EBITDA (adj_ebitda_fy3 if available, else GM-SGA+adj) |
-| C27 | Acquisition multiple |
+| C27 | Acquisition multiple (default **5.0** — Jira updated from 7.0) |
 | C28 | % acquired |
 | C40 | Exit multiple (fixed at 6) |
 | H26–H46 | Rate parameters |
@@ -322,7 +324,7 @@ Loads `Prebid V31  Template.xlsx`, fills ~70 INPUT cells, leaves formula cells u
 1. Extracted Historical P&L — company name, FY labels, revenue/GM/SGA/interest/adjustments
 2. Collateral & Sources — net revenue collateral (defaults to revenue_fy3), inventory, M&E, building, term loans
 3. 5-Year Projections — revenue/GM/SGA/interest/adjustments/term loan for Y1–Y5, with OCR/Calculated badge
-4. Deal Terms — acquisition_multiple (default 7.0), pct_acquired (default 1.0)
+4. Deal Terms — acquisition_multiple (default **5.0** — Jira updated), pct_acquired (default 1.0)
 5. Manual Inputs — Sources section (seller note, earnout, equity roll + advance rates), Uses (debt service, working capital, CFADS), Transaction Fees, Rate Parameters
 
 ---
@@ -490,6 +492,39 @@ App runs at **http://localhost:5000**
 - [x] LLM-V3-EXTRACTION — `_extract_financial_sections()` replaced with dual-axis scoring (keyword density + numeric table density); force-includes window with highest numeric score; `_unpack_extraction()` helper added; Pass 3 inserted into `extract_financial_fields()` (triggers when `revenue_fy3` null, re-runs LLM on top-3 numeric windows); CAGR base in `fill_missing_projections()` uses `rev3→rev2→rev1` fallback chain with `base_years_back` offset; debug JSON enhanced with `pass3_triggered`, `fields_null_after_merge`, per-year revenue snapshots (`llm_service.py`)
 - [x] LLM-V3-HOTFIXES — (1) `generate_risk_analysis()` `NameError: client` fixed — added `client = OpenAI(...)` as first line; (2) `WINDOW` increased from `500` to `1500` chars; (3) dense-block numeric bonus added — if ≥8 lines with any number in window → `+5` to `numeric_score`; (4) all 9 `print()` calls replaced with `logger.info()` / `logger.warning()` (`llm_service.py`)
 - [x] SOURCES-COLLATERAL-FIX (session 2026-03-11) — 8 prompt/code fixes to make Sources section extract correctly from real CIM PDFs. See CLAUDE.md SOURCES-FIX-SESSION-2026-03-11 for full details. Key fixes: M&E multiplier default 0→0.50; leverage_multiple input (default 3.5) + Term Loans fallback formula; ADJ. EBITDA PROJECTION CONTAMINATION GUARD (7-column table guard with Polytek example); COLLATERAL SOURCE PRIORITY (Balance Sheet > Borrowing Base Table for all fields); VALUE TREND rule for M&E (increasing=Gross Cost, constant=NBV); CONSTANT PERIOD VALUES rule for Building (constant across periods=Gross Cost, increasing=M&E row); Inventory NO-ASSUMPTION RULE refined (removed false "different values" constraint that caused LLM to reject correct inventory value matching AR).
+- [x] PIPELINE-BUG-FIX (session 6 — 2026-03-11) — 8 cross-file bugs fixed after full pipeline analysis from OCR→LLM→Review→Calculator→Excel:
+  - FIX-1 (HIGH, llm_service.py): Pass 4 rescue prompt still used old value-trend rule ("increasing = Gross Cost", "constant = Gross Cost") for M&E and Building — contradicted the main prompt's ROW-LABEL-FIRST fix (COLLATERAL-ROW-LABEL-FIX-2026-03-11). Fixed: replaced with row-label-first language ("Find ROW whose label matches..., DO NOT infer from value trends").
+  - FIX-2 (HIGH, calculator.py): Term Loans C12 fallback chain in calculator.py was missing Tier 2 (line_of_credit + current_lt_debt) that existed in excel_export.py — caused Sources total to differ between web analysis page and Excel export when LOC/CLTD were extracted. Fixed: added Tier 2 to calculator.py to fully match excel_export.py's 4-tier chain.
+  - FIX-3 (MEDIUM, calculator.py): `if _existing_tl is not None and _f(_existing_tl) > 0:` treated user-entered 0 as null, triggering EBITDA×leverage fallback instead of using 0. Fixed: changed to `if _existing_tl is not None:` — any non-None value (including 0) is used directly; None triggers fallback chain.
+  - FIX-4 (MEDIUM, app.py): `detected_fy_years` not passed to `review.html` on validation error re-render — caused label "Adj. EBITDA – FYFY3" (doubled "FY") when form submission failed validation. Fixed: added `detected_fy_years=session.get('detected_fy_years', [])` to the re-render call.
+  - FIX-5 (MEDIUM, excel_export.py): `_ebitda_from_pl(n)` used `if gm` (Python truthiness) — returned 0.0 when `gm=0.0` even if SGA and adjustments were non-zero, violating project rule "never use truthiness for numeric fields". Fixed: changed to `if gm is not None`.
+  - FIX-6 (LOW, review.html): M&E Equipment advance rate input had no `<label>` element — inconsistent with other 3 advance rate inputs (Net Revenue Rate, Inventory Rate, Bldg & Land Rate). Fixed: added `<label class="form-label small">M&E Rate</label>`.
+  - FIX-7 (LOW, review.html): No third badge state for `proj_source == 'manual_required'` — showed misleading "Auto-calculated from historical avg" badge when all historical revenues were null. Fixed: added `{% elif proj_source == 'manual_required' %}` branch with warning badge "Enter manually — no historical data".
+  - FIX-8 (LOW, review.html): Acquisition multiple form allowed `min=1 max=30` — wider than LLM prompt validation range of 3.0–15.0×. Fixed: changed to `min=3 max=15` to match prompt-side enforcement.
+- [x] SPRINT1-V2-PROMPT-FIX (session 8 — 2026-03-12) — 4 prompt engineering fixes to `services/llm_service.py` from DocAnalyzer_Complete_Prompt_Fixes_v2.pdf (fixes NOT already covered by session 7).
+  - FIX-1 [CRITICAL]: CONSOLIDATED REVENUE RULE appended to Section B — 3-step anti-segment trap: (1) identify consolidated vs segment tables; (2) largest value wins; (3) extracted revenue must be ≥ any single segment; rejects geography/product-line/channel rows; applies to all proj_revenue_y1–y5.
+  - FIX-2 [CRITICAL]: COGS EXTRACTION RULE — TOTAL LINE ONLY appended to Section B — rejects sub-components (Freight COGS, Direct Labor, Manufacturing Overhead); PLAUSIBILITY CHECK: GM% < 10% or > 85% → reject; COGS < 10% of revenue → return null.
+  - FIX-3 [CRITICAL]: SGA ROW SELECTION RULE appended to Section B — 4-step label+size check; rejects R&D, Advertising, Total OpEx as SGA; SIZE SANITY: SGA must be 3%–60% of revenue; no SGA row found → null (never substitute R&D or Total OpEx).
+  - FIX-5 [HIGH]: FIXED ASSET SCHEDULE PERIOD AND ROW RULES appended to Section G — PERIOD RULE: always use fy3 (most recent) column; ROW IDENTIFICATION RULE: Equipment row values increase (Gross Cost accumulates), Building row values constant across periods; SELF-CHECK checklist before returning both fields.
+
+- [x] SPRINT2-PROMPT-FIX (session 8 — 2026-03-12) — 4 prompt engineering fixes to `services/llm_service.py` from DocAnalyzer_Sprint2_Fixes.pdf (Run 2 analysis of Project Chimera). Sprint 2 score target: 32–36 / 39 fields (82–92%).
+  - BUG-C7 [CRITICAL]: YEAR-ANCHOR ENFORCEMENT appended to Section A — generalizable fix for positional reading in 4+ column tables (CIMs with Dec-22A|Dec-23A|Dec-24A|Dec-25A); 5-step correct approach with generalizable example; SELF-CHECK for every revenue/GM/SGA/EBITDA/adjustments value; resolves 5 wrong fields (revenue×3 + adjustments×2) in one rule.
+  - BUG-C8 [HIGH]: FIXED ASSET SELF-VERIFICATION SWAP DETECTION appended to Section G — 3-step post-extraction verification: Step 1 trend test (M&E row must increase), Step 2 constant test (Building row must be constant), Step 3 period re-check after any swap; uses value trends not row labels (OCR frequently corrupts labels); resolves me_equipment↔building_land swap.
+  - BUG-C9 [MEDIUM]: SGA SIZE CHECK SCOPE RESTRICTION appended to Section B — percentage sanity check (3%–60%) now ONLY applies to sga_fy1/2/3; proj_sga_y1–y5 must never be rejected on percentage basis; forecast columns use year-anchor rule for positional matching; resolves proj_sga regression (null→correct 19k/21k/21k).
+  - BUG-C10 [MEDIUM]: ADJUSTMENTS CROSS-CHECK RULE appended to Section C — per-year reconciliation: if (adj_ebitda − reported_ebitda) differs from stated adjustments by >10%, back-derives implied_adjustments with confidence=0.80; safety net for BUG-C7 year-anchor fix; only fires when reported_ebitda non-null.
+
+- [x] JIRA-DEFAULTS-TASK (session 8 — 2026-03-12) — Default value updates across 3 files per Jira_Task_Defaults_Implementation.pdf.
+  - `services/excel_export.py`: `ws['C27']` default changed 7.0 → **5.0** (Jira: default 5× acquisition multiple); `ws['D7']` confirmed at 0.75 (no change needed).
+  - `templates/review.html`: Acquisition Multiple input fallback changed `'7.0'` → **`'5.0'`**; Net Revenue Rate fallback confirmed at `'0.75'` (no change needed).
+  - `app.py`: Injected deal-term defaults before `session['extracted'] = extracted` — `acquisition_multiple = 5.0` if None; `net_revenue_multiplier = 0.75` if None. Ensures session dict carries defaults forward even when analyst submits form without touching those fields.
+  - `services/calculator.py`: `acquisition_multiple` not present in `run_calculations()` (field only used in excel_export.py); `net_revenue_multiplier` confirmed at 0.75 default on line 64 — no change needed.
+
+- [x] DOCANALYZER-PROMPT-FIX (session 7 — 2026-03-11) — 5 LLM prompt engineering fixes to `services/llm_service.py` from DocAnalyzer reference PDF. Expected combined accuracy gain: ~38% baseline → 65–75% on NEC Group CIM.
+  - PDF-FIX-1 [CRITICAL]: Added Section G — COLLATERAL FIELD EXTRACTION RULES to `_build_extraction_prompt()` immediately before Section F (OUTPUT JSON SCHEMA). Section G adds source-document anchoring for all 4 collateral fields with explicit balance-sheet-only rules, DSO sanity check (AR > 30% of revenue_fy3 → REJECT), inventory balance-sheet-only rule, M&E NBV-preferred rule (with fallback to labeled-row value when no separate NBV column), building Gross Cost rule.
+  - PDF-FIX-2 [CRITICAL]: Expanded Pass 2 trigger in `extract_financial_fields()` to also fire when ANY of the 4 balance-sheet collateral fields is null from Pass 1, regardless of document length. Previously only fired when `len(ocr_text) > MAX_CONTEXT_CHARS`. New condition: `_collateral_null or (bool(needs_retry) and len(ocr_text) > MAX_CONTEXT_CHARS)`. Balance sheet data lives in the latter half of CIMs and was silently missed when documents compressed under the length threshold.
+  - PDF-FIX-3 [HIGH]: Added PROJECTION COUNT RULE to Section D — LLM must COUNT explicit projection columns before extracting; only extract years with labeled columns (3 visible → extract Y1-Y3 only; 4 visible → Y1-Y4; 5 → Y1-Y5). Prevents silent CAGR extrapolation hallucination (BUG-N6).
+  - PDF-FIX-4 [HIGH]: Replaced Rule 9 in BOTH `SYSTEM_PROMPT` constant and `_build_system_prompt()` with TWO-TIER TTM/LTM rule. Old rule was blanket ignore. New rule: ignore TTM/LTM when FY-labeled columns exist (primary); use TTM/LTM as fy3 proxy with confidence ≤ 0.75 when NO FY{y3} column exists (exception). NTM/Run-Rate/Pro Forma/PF/Combined always ignored. Prevents `revenue_fy3 = null` on CIMs that use TTM as their most recent period header.
+  - PDF-FIX-5 [MEDIUM]: Inserted EBITDA EXTRACTION PRIORITY (5-tier chain) into Section C before the THREE DISTINCT METRICS block. Tier 1 = stated adj_ebitda row (highest priority); Tier 2 = GM-SGA+adj derivation; Tier 3 = Op_Income+D&A+adj build-up; Tier 4 = stated EBITDA + adjustments; Tier 5 = null. Explicit rule: NEVER return 0 for adj_ebitda. Prevents silent null when stated EBITDA row exists but GM/COGS are missing.
 
 ---
 
@@ -552,6 +587,26 @@ The prompt includes an explicit example with these exact Polytek values as a gen
 In Polytek, AR = 6,878 AND Inventory = 6,878 (same value coincidentally).
 A previous anti-hallucination rule said "AR and Inventory almost always have DIFFERENT values" — this caused the LLM to REJECT the correct inventory (6,878) because it matched AR, then pick 14,494 instead.
 **Fix**: The rule now says "may coincidentally have the same value — acceptable if each was independently confirmed from its own labeled row."
+
+---
+
+## 14. Accuracy Benchmark — Project Chimera (Polytek Development Corp.)
+
+| Run | Session | Score | Key Issues |
+|---|---|---|---|
+| Run 1 (baseline) | session 7 | 19 / 37 = **51%** | Segment revenue, null SGA, M&E/Building swap |
+| Run 2 (Sprint 1 applied) | session 8 | 19 / 39 = **49%** | proj_revenue fixed; revenue year-shifted; adjustments regressed; M&E/Building still swapped |
+| Run 3 (Sprint 1+2 applied) | session 8 | Target **32–36 / 39 (82–92%)** | Year-anchor + swap detection + adjustments cross-check expected to resolve 13+ fields |
+
+**Sprint 1 fixes that resolved fields:**
+- proj_revenue_y1/2/3: 51k/58k/67k → 96k/108k/123k ✅
+
+**Sprint 2 fixes targeting Run 2 regressions:**
+- revenue_fy1/2/3 year-shifted (160k/125k/99k → correct 125k/99k/92k) — BUG-C7
+- adjustments_fy2/3 wrong column (2438/394 → correct 5088/886) — BUG-C7 + BUG-C10
+- me_equipment/building_land swapped (3250/14634 → correct 14634/3250) — BUG-C8
+- proj_sga null (null → correct 19k/21k/21k) — BUG-C9
+- inventory year-shifted (14779 → correct 13512) — BUG-C7 self-corrects (no separate fix needed)
 
 ---
 

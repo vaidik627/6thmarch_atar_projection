@@ -19,6 +19,9 @@ import logging
 import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
+from services.revenue_extractor import extract_revenue_text
+from services.gp_extractor import extract_gp_text
+from services.cogs_extractor import extract_cogs_text, extract_inventory_text
 
 load_dotenv()
 
@@ -234,12 +237,15 @@ RULE 8 — COLUMN ASSIGNMENT BY HEADER MATCH, NOT POSITION:
   Instead: scan ALL column headers first, identify which column contains fy1/fy2/fy3 labels,
   then read only those columns. Ignore all columns that do not match a detected year.
 
-RULE 9 — IGNORE NON-FISCAL COLUMNS:
-  The following column types must be COMPLETELY IGNORED for all field extraction:
-    LTM, TTM, NTM, Run-Rate, Annualised, Annualized, Pro Forma, PF, Combined,
-    Adjusted (as standalone column header), Budget (when not a target projection year),
-    Q1/Q2/Q3/Q4 (quarterly columns).
-  Do not assign any value from these columns to any fy1/fy2/fy3 or projection slot.
+RULE 9 — TTM/LTM COLUMN HANDLING — TWO-TIER RULE:
+  PRIMARY: TTM, LTM, NTM, Run-Rate, Pro Forma, PF, Combined, Q1-Q4 are NOT historical fiscal
+  years. Do not assign them to fy1, fy2, or fy3 when labeled FY columns exist.
+  EXCEPTION (TTM/LTM as fy3 proxy):
+    If the document has NO column labeled with the most recent fiscal year or Actual suffix,
+    AND a TTM or LTM column is the only column representing the most recent 12-month period,
+    THEN assign it to fy3 with confidence <= 0.75 and note in citation: 'TTM used as fy3 proxy'.
+    Never use TTM or LTM as a proxy for fy1 or fy2.
+  NTM, Run-Rate, Pro Forma, PF, Combined, Q1-Q4 are ALWAYS ignored. No exceptions.
 
 RULE 10 — RESTATED vs AS-REPORTED:
   If a document contains two columns for the same fiscal year with labels such as
@@ -317,12 +323,17 @@ RULE 8 — COLUMN ASSIGNMENT BY HEADER MATCH, NOT POSITION:
   Instead: scan ALL column headers first, identify which column contains fy1/fy2/fy3 labels,
   then read only those columns. Ignore all columns that do not match a detected year.
 
-RULE 9 — IGNORE NON-FISCAL COLUMNS:
-  The following column types must be COMPLETELY IGNORED for all field extraction:
-    LTM, TTM, NTM, Run-Rate, Annualised, Annualized, Pro Forma, PF, Combined,
-    Adjusted (as standalone column header), Budget (when not a target projection year),
-    Q1/Q2/Q3/Q4 (quarterly columns).
-  Do not assign any value from these columns to any fy1/fy2/fy3 or projection slot.
+RULE 9 — TTM/LTM COLUMN HANDLING — TWO-TIER RULE:
+  PRIMARY: TTM, LTM, NTM, Run-Rate, Pro Forma, PF, Combined, Q1-Q4 are NOT historical fiscal
+  years. Do not assign them to fy1, fy2, or fy3 when labeled FY columns exist.
+  EXCEPTION (TTM/LTM as fy3 proxy):
+    If the document has NO column labeled FY{y3} or {y3}A or {y3} Actual,
+    AND a TTM or LTM column is the only column representing the most recent 12-month period,
+    THEN assign it to fy3 with:
+      - confidence <= 0.75
+      - citation: 'TTM column used as fy3 proxy — no labeled FY{y3} column found'
+    Never use TTM or LTM as a proxy for fy1 or fy2.
+  NTM, Run-Rate, Pro Forma, PF, Combined, Q1-Q4 are ALWAYS ignored. No exceptions.
 
 RULE 10 — RESTATED vs AS-REPORTED:
   If a document contains two columns for the same fiscal year with labels such as
@@ -925,6 +936,30 @@ COLUMN FORMAT PRIORITY — WHEN TWO FORMATS EXIST FOR THE SAME YEAR:
     → Do NOT use a bare-year column (FY{fy1}) for fy1 when Dec-NNA format is available
     NOTE: "Dec-{yy2}A" contains "{yy2}" not "{yy1}" — it cannot represent fy1={fy1}.
 
+YEAR-ANCHOR ENFORCEMENT (CRITICAL — applies to every extracted field):
+When a financial table has MORE columns than your 3 target years ({fy1}, {fy2}, {fy3}),
+you MUST skip columns whose header does not match your target years.
+DO NOT read positionally (first column = fy1, second = fy2, third = fy3).
+This is the most common extraction failure on multi-year CIM tables.
+
+CORRECT approach:
+  Step 1: Read the column headers across the full row.
+  Step 2: Find the column whose header matches {fy1} (or FY{fy1}, {yy1}A, etc.).
+  Step 3: Read the value in that specific column for fy1.
+  Step 4: Repeat for {fy2} and {fy3} independently.
+  Step 5: Ignore any column whose header year is NOT in [{fy1}, {fy2}, {fy3}].
+
+EXAMPLE (generalizable — do not memorise the numbers):
+  Table header: Col-A | Col-B | Col-C | Col-D
+  If Col-A = year before {fy1}, Col-B = {fy1}, Col-C = {fy2}, Col-D = {fy3}:
+    fy1 value = Col-B value (NOT Col-A, even though it is first)
+    fy2 value = Col-C value
+    fy3 value = Col-D value
+
+SELF-CHECK before returning any revenue/GM/SGA/EBITDA/adjustments value:
+  Confirm: 'Did I verify the column header for this value matches the target year?'
+  If you cannot confirm the header match → return null rather than guess positionally.
+
 COLLATERAL & DEBT FIELDS — IMPORTANT:
   existing_term_loans: Return the OUTSTANDING principal balance of any existing term loan
     or cashflow loan. Do NOT return the revolving ABL/revolver balance.
@@ -1354,6 +1389,48 @@ SG&A / TOTAL OPERATING EXPENSES EXTRACTION (sga_fy1/2/3):
   The sga field should be in range 10%–60% of revenue for most businesses.
   Apply the SAME rules to proj_sga_y1–y5 (same row, projection columns).
 
+CONSOLIDATED REVENUE RULE (ANTI-SEGMENT TRAP):
+Revenue must be the SINGLE consolidated top-line that equals the SUM of all segments.
+STEP 1 — Identify if the document has multiple revenue tables:
+  - 'Consolidated Financial Performance' / 'Total Company' table → USE THIS
+  - 'Industrial Segment', 'Consumer Segment', 'Geographic Breakdown' → IGNORE for revenue
+STEP 2 — Largest value wins:
+  - If you see two revenue rows and one is ~2× the other, the LARGER is consolidated.
+  - Segment rows sum to the consolidated row — never use a sub-total.
+STEP 3 — Confirm before assigning:
+  - The consolidated revenue must be >= any single segment value you can see.
+  - If extracted revenue < 70% of the sum of visible segment values → REJECT, find larger row.
+WRONG signals (do NOT extract as revenue): geography rows, product line rows, channel rows.
+Apply the same Consolidated Revenue Rule to ALL projection revenue fields (Y1–Y5).
+
+COGS EXTRACTION RULE — TOTAL LINE ONLY:
+Extract TOTAL Cost of Goods Sold, never a COGS sub-component.
+Correct: 'Cost of Goods Sold', 'Cost of Revenue', 'Cost of Sales', 'Total COGS'
+Wrong: 'Other COGS', 'Freight COGS', 'Direct Labor', 'Direct Materials', 'Manufacturing Overhead'
+PLAUSIBILITY CHECK: implied_gm_pct = (revenue - cogs) / revenue
+  - If implied_gm_pct < 10% → reject. If implied_gm_pct > 85% → reject (sub-line).
+  - If extracted COGS < 10% of revenue → return null for COGS.
+
+SGA ROW SELECTION RULE — SIZE AND LABEL CHECK:
+STEP 1: SGA is typically the LARGEST single operating expense line, 10-40% of revenue.
+STEP 2: Reject R&D, Advertising, Marketing, E-Commerce, Total Operating Expenses as SGA.
+STEP 3: Find row labeled 'Selling, General & Administrative', 'SG&A', 'SG&A Expenses'.
+STEP 4: If no SGA row found → return null. Do NOT substitute R&D or Total OpEx.
+SIZE SANITY CHECK: SGA must be > 3% and < 60% of revenue.
+
+SGA SIZE CHECK — SCOPE RESTRICTION:
+The SGA percentage sanity check (must be 3% to 60% of revenue) applies ONLY to
+historical SGA fields: sga_fy1, sga_fy2, sga_fy3.
+DO NOT apply any percentage or size check to projection SGA fields:
+  proj_sga_y1, proj_sga_y2, proj_sga_y3, proj_sga_y4, proj_sga_y5
+For projection SGA: extract any value labeled 'SG&A', 'Selling General Administrative',
+or 'Operating Expenses' in the forecast columns, without size validation.
+Projections reflect management's forward cost structure — they may differ significantly
+from historical ratios and should never be rejected on a percentage basis.
+ALSO: Apply the Year-Anchor Rule (Section A) to projection SGA columns.
+Forecast columns are labeled Y1/Y2/Y3 or {proj_y1}F / {proj_y2}F / {proj_y3}F.
+Match the column label before extracting — do not read projection values positionally.
+
 ════════════════════════════════════════════════════════════
 SECTION C — FORMULA DERIVATION CHAIN
 ════════════════════════════════════════════════════════════
@@ -1371,6 +1448,21 @@ Set confidence = 0.75 for all derived values. Cite the formula in citation.
   CFADS              = Adj. EBITDA − CAPEX − Working Capital Change − Taxes
   DSCR               = CFADS / Total Debt Service
   FCCR               = (Adj. EBITDA − CAPEX) / Total Debt Service
+
+EBITDA EXTRACTION PRIORITY — Use in order, stop at first successful result:
+  TIER 1 — STATED (highest priority):
+    Find a row explicitly labeled 'Adjusted EBITDA', 'Adj. EBITDA', 'EBITDA (as adjusted)',
+    'Normalized EBITDA', 'Pro Forma EBITDA', 'Recurring EBITDA'. Use this value directly.
+  TIER 2 — DERIVED FROM GROSS MARGIN:
+    If Gross Margin is available: adj_ebitda = GM - SGA + non_recurring_adjustments.
+  TIER 3 — BUILD-UP FROM OPERATING INCOME:
+    If Operating Income is available: adj_ebitda = Op_Income + D&A + adjustments.
+  TIER 4 — STATED EBITDA + ADJUSTMENTS:
+    If an unadjusted EBITDA row exists: adj_ebitda = EBITDA + non_recurring_adjustments.
+  TIER 5 — NULL:
+    If none of Tiers 1-4 produce a confident result, return null.
+    NEVER return 0 as a substitute for null on adj_ebitda.
+    NEVER guess or interpolate EBITDA from other metrics.
 
 EBITDA — THREE DISTINCT METRICS (CRITICAL — DO NOT CONFUSE THEM):
   The P&L has THREE separate EBITDA-related line items. Extract each into its own field.
@@ -1483,6 +1575,25 @@ ADJ. EBITDA CROSS-CHECK (run for every historical year):
     Set confidence = 0.60
     Append to citation: '[DISCREPANCY: stated={{stated}}, calc={{calc}}, delta={{pct}}%]'
 
+ADJUSTMENTS CROSS-CHECK RULE (apply per fiscal year independently):
+After extracting adjustments_fyN, verify reconciliation with adj_ebitda:
+  expected_adj_ebitda = reported_ebitda_fyN + adjustments_fyN
+
+If both reported_ebitda_fyN and adj_ebitda_fyN are available:
+  implied_adjustments = adj_ebitda_fyN − reported_ebitda_fyN
+  discrepancy_pct = abs(adjustments_fyN − implied_adjustments) / implied_adjustments
+
+If discrepancy_pct > 10%:
+  The extracted adjustments_fyN is likely from the wrong column or row.
+  Preferred action: use implied_adjustments = adj_ebitda_fyN − reported_ebitda_fyN
+  as the adjustments value, with confidence = 0.80 and citation noting:
+  'Adjustments back-derived from Adj.EBITDA − Reported EBITDA (stated value failed
+  reconciliation check)'
+  Only use the stated adjustments row value if reconciliation passes (< 10% gap).
+
+This rule applies to adjustments_fy1, adjustments_fy2, adjustments_fy3 independently.
+If reported_ebitda is null for a given year, skip the cross-check for that year.
+
 ════════════════════════════════════════════════════════════
 SECTION D — PROJECTION EXTRACTION RULES
 ════════════════════════════════════════════════════════════
@@ -1512,6 +1623,17 @@ TEMPORAL GUARD: Projection Year 1 (y1) = {proj_y1} (= fy3 + 1 = {fy3} + 1).
 
 If no explicit forecast section exists → return null for ALL proj_ fields.
 The system will auto-calculate projections from CAGR and historical averages.
+
+PROJECTION COUNT RULE — ANTI-HALLUCINATION (CRITICAL):
+  Before extracting any projection year, COUNT the explicit projection columns in the table.
+  Only extract years that have a labeled column visible in the document.
+    - 3 projection columns visible → extract Y1/Y2/Y3 only; return null for Y4 and Y5.
+    - 4 projection columns visible → extract Y1–Y4 only; return null for Y5.
+    - 5 projection columns visible → extract Y1–Y5.
+  DO NOT calculate, extrapolate, or apply CAGR to generate missing projection years.
+  DO NOT infer Y5 from Y4 growth trends.
+  A null projection year is the CORRECT answer when that year is not in the document.
+  A fabricated projection year is a critical error in a PE deal context.
 
 ════════════════════════════════════════════════════════════
 SECTION E — ANTI-HALLUCINATION SELF-CHECK
@@ -1563,6 +1685,83 @@ Before writing your final JSON, verify each item:
   [ ] adj_ebitda >= reported_ebitda: adjusted must be ≥ base EBITDA (add-backs are always positive)
   [ ] line_of_credit: revolving credit/ABL balance from most recent balance sheet — null if not found
   [ ] current_lt_debt: current portion of LTD from most recent balance sheet — null if not found
+
+════════════════════════════════════════════════════════════
+SECTION G — COLLATERAL FIELD EXTRACTION RULES (Balance Sheet / Fixed Asset Schedule Only)
+════════════════════════════════════════════════════════════
+CRITICAL: All 4 collateral fields come ONLY from the BALANCE SHEET or FIXED ASSET SCHEDULE.
+They are NOT income statement or P&L figures. Never use revenue, sales, or P&L totals here.
+
+net_revenue_collateral — Accounts Receivable (AR):
+  Source: BALANCE SHEET Current Assets section only.
+  Labels: 'Accounts Receivable', 'Trade Receivables', 'AR, net', 'Receivables', 'Net AR'
+  NOT revenue, NOT net sales, NOT top-line income, NOT P&L revenue row.
+  DSO SANITY CHECK: AR must be plausible as (revenue_fy3 / 365) × 30–90 days.
+  If extracted AR > 30% of annual revenue_fy3 → value is likely P&L revenue, REJECT and return null.
+
+inventory_collateral — Inventory:
+  Source: BALANCE SHEET Current Assets section only.
+  Labels: 'Inventory', 'Inventories', 'Raw Materials + WIP + Finished Goods (total line)'
+  May coincidentally equal AR value — acceptable if confirmed from its own labeled row.
+  Do NOT use Borrowing Base schedule. Do NOT use sub-schedule gross before reserves.
+
+me_equipment_collateral — Machinery & Equipment:
+  Source: FIXED ASSET SCHEDULE — find the row whose LABEL matches equipment terms.
+  Row labels: 'Equipment', 'Machinery', 'M&E', 'Warehouse Equipment', 'Vehicles', 'Tools',
+              'Plant & Equipment', 'Manufacturing Equipment', 'FF&E'
+  If the schedule shows SEPARATE Gross Cost and Accumulated Depreciation columns per asset:
+    Extract NET BOOK VALUE = Gross Cost − Accumulated Depreciation (NBV is the collateral basis).
+  If the schedule shows ONE value series per row (no per-asset NBV column):
+    Extract the value from the correctly-labeled row directly.
+  DO NOT use the combined 'Total Net PP&E' row — that is a combined aggregate.
+
+building_land_collateral — Building / Land:
+  Source: FIXED ASSET SCHEDULE.
+  Row labels: 'Building', 'Buildings', 'Real Estate', 'Land', 'Property', 'Facility',
+              'Leasehold Improvements', 'Land & Buildings', 'Land & Improvements'
+  Use GROSS COST (original purchase price column) — building/land does not depreciate in market value.
+  Extract the MOST RECENT historical year column value from the correctly-labeled row.
+
+FIXED ASSET SCHEDULE — PERIOD AND ROW RULES:
+PERIOD RULE: Always extract from the MOST RECENT HISTORICAL period column (Dec-{yy3}A / {fy3}).
+  Do NOT use Dec-{yy2}A or Dec-{yy1}A values — these are prior years, not current collateral.
+ROW IDENTIFICATION RULE:
+  Equipment row → values INCREASE left to right across years (asset additions over time).
+    This increasing pattern confirms you are on the Equipment / M&E Gross Cost row.
+  Building row → values are CONSTANT or near-constant across all periods (land + building don't change).
+    If the 'Building' row shows increasing values → you are on the Equipment row by mistake.
+SELF-CHECK before returning:
+  [ ] Is me_equipment_collateral from the {fy3} column (most recent)?
+  [ ] Does the Building row value stay approximately constant across all periods?
+  [ ] Is the M&E row value larger in {fy3} than in {fy1}? (should be — increasing Gross Cost)
+  [ ] Did you avoid using 'Total Net PP&E' as either M&E or Building collateral?
+
+FIXED ASSET SELF-VERIFICATION — SWAP DETECTION (run after extracting both values):
+After you have extracted both me_equipment_collateral and building_land_collateral,
+perform this 3-step verification before finalising the values:
+
+STEP 1 — Trend test:
+  Go back to the Fixed Asset Schedule row you used for me_equipment_collateral.
+  Check: do the values on that row INCREASE across the historical periods?
+    Yes (increasing) → correct row for M&E. Keep the value.
+    No (constant or decreasing) → you are on the Building row by mistake.
+      Swap: me_equipment = your current building_land value,
+            building_land = your current me_equipment value.
+
+STEP 2 — Constant test:
+  Go back to the row you used for building_land_collateral.
+  Check: are the values on that row CONSTANT (same number every period)?
+    Yes (constant) → correct row for Building. Keep the value.
+    No (increasing) → you are on the Equipment row by mistake.
+      Swap as described in Step 1.
+
+STEP 3 — After any swap, re-check the period:
+  Ensure both values are from the most recent historical period column
+  (the column matching {fy3} / Dec-{yy3}A / FY{fy3}).
+  Do not use {fy1} or {fy2} column values for collateral.
+
+IMPORTANT: This swap detection is structural — it uses value trends, not row labels.
+OCR frequently corrupts row labels. Always trust value trends over label text.
 
 ════════════════════════════════════════════════════════════
 SECTION F — OUTPUT JSON SCHEMA
@@ -1861,16 +2060,16 @@ FIELDS TO EXTRACT:
    Do NOT use borrowing base schedule gross value.
 
 3. me_equipment_collateral — Machinery & Equipment from FIXED ASSET SCHEDULE.
-   Labels: "Machinery & Equipment", "M&E", "Equipment", "Warehouse Equipment",
-   "Plant & Equipment", "Fixed Assets", "FF&E", "Manufacturing Equipment".
-   Extract the MOST RECENT historical year column value.
-   Values increasing across years = Gross Cost — extract it as-is.
+   Find the ROW whose label matches: "Machinery & Equipment", "M&E", "Equipment",
+   "Warehouse Equipment", "Plant & Equipment", "Fixed Assets", "FF&E",
+   "Manufacturing Equipment". Extract the MOST RECENT historical year column value.
+   DO NOT infer from value trends (increasing/constant). Use ROW LABEL to identify the row.
 
 4. building_land_collateral — Building / Land from FIXED ASSET SCHEDULE.
-   Labels: "Building", "Buildings", "Land", "Real Estate", "Property",
-   "Leasehold Improvements", "Land & Buildings".
+   Find the ROW whose label matches: "Building", "Buildings", "Land", "Real Estate",
+   "Property", "Leasehold Improvements", "Land & Buildings".
    Extract the MOST RECENT historical year column value.
-   Values constant across years = correct Gross Cost.
+   DO NOT infer from value trends. Use ROW LABEL to identify the row.
 
 5. existing_term_loans — Outstanding term loan balance (NOT revolving credit).
    Labels: "Term Loan", "Senior Secured Term Loan", "TL-A", "TL-B",
@@ -1925,6 +2124,155 @@ DOCUMENT SECTIONS:
         logger.warning(f"  Pass 4 collateral rescue failed: {_e}")
 
 
+def _extract_revenue_fields_focused(client, scoped_text: str,
+                                     fy_years: tuple) -> dict | None:
+    """
+    Focused revenue extraction from a pre-scoped table block (Stage 3 of revenue pipeline).
+
+    Receives the output of extract_revenue_text() and extracts only revenue/GM/SGA fields.
+    Returns a FLAT dict: {revenue_fy1: val, revenue_fy1_conf: 0.9, revenue_fy1_cite: '...'}.
+    Returns None on failure.
+    """
+    y1, y2, y3 = fy_years
+    system_prompt = (
+        "You extract financial data from private equity CIMs. "
+        "Return JSON only — no prose, no markdown fences."
+    )
+    user_prompt = (
+        f"You are extracting revenue, gross margin, and SG&A from a scoped P&L table.\n"
+        f"Fiscal years: fy1={y1}, fy2={y2}, fy3={y3} (most recent historical).\n"
+        f"All values in $000s. If the document uses $M, multiply by 1000.\n\n"
+        f"Rules:\n"
+        f"- Extract TOTAL consolidated top-line revenue only (highest value row).\n"
+        f"- FORBIDDEN: geographic breakdowns, segment rows, product rows.\n"
+        f"- Gross margin = Revenue - COGS. If gross_margin_% shown, derive: gross_margin = revenue x pct.\n"
+        f"- SG&A: find row labeled SG&A / Selling General Administrative. Return null if not found.\n"
+        f"- For each field: return null if not clearly present — do NOT guess.\n"
+        f"- confidence: 0.0-1.0 (use 0.9 for clearly stated, 0.7 for derived, 0.5 for uncertain).\n\n"
+        f"Scoped table:\n{scoped_text[:3000]}\n\n"
+        f'Return JSON:\n{{\n'
+        f'  "revenue_fy1": <num|null>, "revenue_fy1_conf": <0-1>, "revenue_fy1_cite": "...",\n'
+        f'  "revenue_fy2": <num|null>, "revenue_fy2_conf": <0-1>, "revenue_fy2_cite": "...",\n'
+        f'  "revenue_fy3": <num|null>, "revenue_fy3_conf": <0-1>, "revenue_fy3_cite": "...",\n'
+        f'  "gross_margin_fy1": <num|null>, "gross_margin_fy1_conf": <0-1>, "gross_margin_fy1_cite": "...",\n'
+        f'  "gross_margin_fy2": <num|null>, "gross_margin_fy2_conf": <0-1>, "gross_margin_fy2_cite": "...",\n'
+        f'  "gross_margin_fy3": <num|null>, "gross_margin_fy3_conf": <0-1>, "gross_margin_fy3_cite": "...",\n'
+        f'  "sga_fy1": <num|null>, "sga_fy1_conf": <0-1>, "sga_fy1_cite": "...",\n'
+        f'  "sga_fy2": <num|null>, "sga_fy2_conf": <0-1>, "sga_fy2_cite": "...",\n'
+        f'  "sga_fy3": <num|null>, "sga_fy3_conf": <0-1>, "sga_fy3_cite": "..."\n'
+        f'}}'
+    )
+    try:
+        raw = _call_llm(client, user_prompt, system_prompt=system_prompt)
+        raw_stripped = raw.strip()
+        if raw_stripped.startswith('```'):
+            raw_stripped = re.sub(r'^```[a-z]*\n?', '', raw_stripped)
+            raw_stripped = re.sub(r'\n?```$', '', raw_stripped)
+        data = json.loads(raw_stripped)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception as _e:
+        logger.warning(f"  Revenue focused pass failed: {_e}")
+        return None
+
+
+def _extract_gp_fields_focused(client, scoped_gp_text: str,
+                                fy_years: tuple) -> dict | None:
+    """
+    Focused GP/COGS extraction from a GP-R5 scoped text block (Prompt 7A).
+    Returns flat dict with gross_margin_fyN, cogs_fyN, proj_gp_yN keys.
+    Returns None on failure.
+    """
+    y1, y2, y3 = fy_years
+    system_prompt = (
+        "You are a financial data extraction assistant. You will receive a pre-processed "
+        "P&L table section from a CIM. The year headers and revenue row are already identified. "
+        "Your job: extract Gross Profit and COGS values for each year shown. "
+        "Return ONLY valid JSON. No preamble, no explanation. "
+        "NEVER return 0 for a field that is not shown — use null instead."
+    )
+    user_prompt = (
+        f"Extract Gross Profit and COGS from the pre-processed P&L section below.\n"
+        f"Fiscal years: fy1={y1}, fy2={y2}, fy3={y3} (most recent historical).\n"
+        f"All values in $000s. If document uses $M, multiply by 1000.\n\n"
+        f"RULES:\n"
+        f"1. Only extract values from rows explicitly labeled as Gross Profit or COGS variants.\n"
+        f"2. Do NOT calculate or derive — if a row is not present, return null for that field.\n"
+        f"3. Preserve numeric scale (do not multiply or divide).\n"
+        f"4. Projection year values (Y1-Y5) only if explicitly present in the table.\n\n"
+        f"INPUT:\n{scoped_gp_text[:3000]}\n\n"
+        f'OUTPUT JSON:\n{{\n'
+        f'  "gross_margin_fy1": <num|null>, "gross_margin_fy2": <num|null>, "gross_margin_fy3": <num|null>,\n'
+        f'  "cogs_fy1": <num|null>, "cogs_fy2": <num|null>, "cogs_fy3": <num|null>,\n'
+        f'  "proj_gp_y1": <num|null>, "proj_gp_y2": <num|null>, "proj_gp_y3": <num|null>,\n'
+        f'  "proj_gp_y4": <num|null>, "proj_gp_y5": <num|null>,\n'
+        f'  "revenue_unit": "thousands"\n'
+        f'}}'
+    )
+    try:
+        raw = _call_llm(client, user_prompt, system_prompt=system_prompt)
+        raw_stripped = raw.strip()
+        if raw_stripped.startswith('```'):
+            raw_stripped = re.sub(r'^```[a-z]*\n?', '', raw_stripped)
+            raw_stripped = re.sub(r'\n?```$', '', raw_stripped)
+        data = json.loads(raw_stripped)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception as _e:
+        logger.warning(f"  GP focused pass failed: {_e}")
+        return None
+
+
+def _extract_inventory_fields_focused(client, scoped_inv_text: str,
+                                       fy_years: tuple) -> dict | None:
+    """
+    Focused inventory extraction from a Balance Sheet scoped text block (Prompt 7B).
+    Returns flat dict with end_inventory_fyN, purchases_fyN keys.
+    Returns None on failure.
+    """
+    y1, y2, y3 = fy_years
+    system_prompt = (
+        "You are a financial data extraction assistant. You will receive a pre-processed "
+        "Balance Sheet section from a CIM. "
+        "Your job: extract Inventory values and Purchases (if present) for each year shown. "
+        "Return ONLY valid JSON. No preamble, no explanation."
+    )
+    user_prompt = (
+        f"Extract inventory and purchases data from the Balance Sheet section below.\n"
+        f"Fiscal years: fy1={y1}, fy2={y2}, fy3={y3} (most recent historical).\n"
+        f"All values in $000s. If document uses $M, multiply by 1000.\n\n"
+        f"RULES:\n"
+        f"1. Ending Inventory = the Inventory line in Current Assets for each year.\n"
+        f"2. If multiple inventory rows (Raw Materials, WIP, Finished Goods) -> SUM them for total.\n"
+        f"3. Purchases = extract only if explicitly labeled. If not present -> return null.\n"
+        f"4. Do NOT estimate or derive values — extraction only.\n\n"
+        f"INPUT:\n{scoped_inv_text[:3000]}\n\n"
+        f'OUTPUT JSON:\n{{\n'
+        f'  "end_inventory_fy1": <num|null>,\n'
+        f'  "end_inventory_fy2": <num|null>,\n'
+        f'  "end_inventory_fy3": <num|null>,\n'
+        f'  "purchases_fy1": <num|null>,\n'
+        f'  "purchases_fy2": <num|null>,\n'
+        f'  "purchases_fy3": <num|null>\n'
+        f'}}'
+    )
+    try:
+        raw = _call_llm(client, user_prompt, system_prompt=system_prompt)
+        raw_stripped = raw.strip()
+        if raw_stripped.startswith('```'):
+            raw_stripped = re.sub(r'^```[a-z]*\n?', '', raw_stripped)
+            raw_stripped = re.sub(r'\n?```$', '', raw_stripped)
+        data = json.loads(raw_stripped)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception as _e:
+        logger.warning(f"  Inventory focused pass failed: {_e}")
+        return None
+
+
 def extract_financial_fields(ocr_text: str,
                               session_id: str = None) -> tuple[dict, dict, dict, tuple]:
     """
@@ -1950,6 +2298,32 @@ def extract_financial_fields(ocr_text: str,
     # Build year-anchored system prompt with actual detected year integers
     formatted_system_prompt = _build_system_prompt(y1, y2, y3)
 
+    # ── Revenue pre-pass: deterministic table scoping ─────────────────────────
+    # Python isolates the correct revenue table section; LLM only formats it.
+    logger.info("  Revenue pre-pass: scoping revenue table from OCR text…")
+    revenue_scoped_text = extract_revenue_text(ocr_text)
+    if revenue_scoped_text is not ocr_text:  # scoping succeeded
+        logger.info(
+            f"  Revenue pre-pass: scoped to {len(revenue_scoped_text):,} chars "
+            f"— calling focused LLM…"
+        )
+        revenue_json = _extract_revenue_fields_focused(client, revenue_scoped_text, fy_years)
+        if revenue_json:
+            logger.info(
+                f"  Revenue pre-pass: focused call returned {len(revenue_json)} keys"
+            )
+        else:
+            revenue_json = {}
+            logger.warning(
+                "  Revenue pre-pass: focused call returned nothing — "
+                "falling back to Pass 1 for revenue"
+            )
+    else:
+        revenue_json = {}
+        logger.info(
+            "  Revenue pre-pass: no scope found — relying on Pass 1 for revenue"
+        )
+
     # ── Pass 1: Smart section extraction ─────────────────────────────────────
     logger.info(f"  LLM pass 1: selecting relevant sections from {len(ocr_text):,} chars of OCR text…")
     focused_text = _extract_financial_sections(ocr_text, fy_years=fy_years)
@@ -1973,11 +2347,26 @@ def extract_financial_fields(ocr_text: str,
 
     parsed_final = dict(parsed1)
 
-    if not needs_retry or len(ocr_text) <= MAX_CONTEXT_CHARS:
-        logger.info(f"  LLM pass 2: skipped (all fields found or document small enough)")
+    # Check if any of the 4 balance-sheet collateral fields are missing from Pass 1.
+    # Balance sheet / fixed asset data lives in the latter half of CIMs and often misses Pass 1.
+    # Trigger Pass 2 for collateral regardless of document length (PDF FIX-2).
+    _bs_collateral_fields = (
+        'net_revenue_collateral', 'inventory_collateral',
+        'me_equipment_collateral', 'building_land_collateral',
+    )
+    _collateral_null = any(
+        parsed1.get(f) is None
+        or not isinstance(parsed1.get(f), dict)
+        or parsed1[f].get('value') is None
+        for f in _bs_collateral_fields
+    )
+    _needs_pass2 = _collateral_null or (bool(needs_retry) and len(ocr_text) > MAX_CONTEXT_CHARS)
 
-    if needs_retry and len(ocr_text) > MAX_CONTEXT_CHARS:
-        logger.info(f"  LLM pass 2: {len(needs_retry)} fields need retry — {needs_retry}")
+    if not _needs_pass2:
+        logger.info(f"  LLM pass 2: skipped (all fields found, collateral complete, document small enough)")
+
+    if _needs_pass2:
+        logger.info(f"  LLM pass 2: triggered — collateral_null={_collateral_null}, {len(needs_retry)} low-conf/null fields — {needs_retry}")
 
         # Use the second half of the document for the alternate window
         mid = len(ocr_text) // 2
@@ -2133,6 +2522,55 @@ DOCUMENT TEXT:
     # fixed asset schedule, and debt sections. Fills null collateral fields only.
     _extract_collateral_pass(client, ocr_text, fy_years, extracted, confidences, citations)
     # ── END PASS 4 ───────────────────────────────────────────────────────────
+
+    # ── Revenue pre-pass merge ────────────────────────────────────────────────
+    # Pre-pass wins over Pass 1/2/3 for revenue, GM, and SGA fields.
+    # Only overrides where the focused call returned a non-null value.
+    # Projection fields (proj_revenue_y1..y5 etc.) are intentionally excluded.
+    _revenue_override_keys = (
+        'revenue_fy1', 'revenue_fy2', 'revenue_fy3',
+        'gross_margin_fy1', 'gross_margin_fy2', 'gross_margin_fy3',
+        'sga_fy1', 'sga_fy2', 'sga_fy3',
+    )
+    for _rkey in _revenue_override_keys:
+        _rval = revenue_json.get(_rkey)
+        if _rval is not None:
+            extracted[_rkey]   = _rval
+            confidences[_rkey] = revenue_json.get(_rkey + '_conf', 0.85)
+            _rcite = str(revenue_json.get(_rkey + '_cite', '') or '')
+            citations[_rkey]   = (_rcite + ' [RevPass]').strip()
+            logger.info(
+                f"  RevPass merge: {_rkey}={_rval:,.0f} "
+                f"(conf={confidences[_rkey]:.2f})"
+            )
+    # ── END Revenue pre-pass merge ────────────────────────────────────────────
+
+    # ── GP Pilot: focused GP/COGS extraction ─────────────────────────────────
+    # Reuses revenue_scoped_text (same P&L window already identified by Revenue Pilot).
+    # Python finds GP and COGS rows; LLM only formats to JSON.
+    # Falls back gracefully if GP row not found — fallback chain runs in app.py.
+    logger.info("  GP pilot: scanning P&L window for GP and COGS rows…")
+    scoped_gp_text = extract_gp_text(revenue_scoped_text, fy_years)
+    if scoped_gp_text:
+        logger.info("  GP pilot: GP/COGS rows found — calling focused LLM…")
+        gp_json = _extract_gp_fields_focused(client, scoped_gp_text, fy_years)
+        if gp_json:
+            _gp_override_keys = (
+                'gross_margin_fy1', 'gross_margin_fy2', 'gross_margin_fy3',
+                'cogs_fy1', 'cogs_fy2', 'cogs_fy3',
+                'proj_gp_y1', 'proj_gp_y2', 'proj_gp_y3', 'proj_gp_y4', 'proj_gp_y5',
+            )
+            for _gkey in _gp_override_keys:
+                _gval = gp_json.get(_gkey)
+                if _gval is not None:
+                    extracted[_gkey] = _gval
+                    citations[_gkey] = '[GPPass]'
+                    logger.info(f"  GP pilot: {_gkey}={_gval:,.0f}")
+        else:
+            logger.warning("  GP pilot: focused LLM returned nothing — Pass 1 values kept")
+    else:
+        logger.info("  GP pilot: GP row not found in P&L window — fallback chain will run in app.py")
+    # ── END GP Pilot ──────────────────────────────────────────────────────────
 
     # ── Revenue magnitude sanity check ────────────────────────────────────────
     # If extracted revenue_fy3 is much smaller than proj_revenue_y1 (more than 10x),

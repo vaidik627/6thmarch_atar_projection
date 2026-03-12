@@ -332,6 +332,7 @@
             <h6 class="fw-semibold text-muted small text-uppercase mb-2">M&amp;E Equipment Advance Rate</h6>
             <div class="row g-2 mb-3">
               <div class="col-4">
+                <label class="form-label small">M&amp;E Rate</label>
                 <input type="number" step="0.01" min="0" max="1" name="me_equipment_multiplier"
                   class="form-control form-control-sm"
                   value="{{ form_data.get('me_equipment_multiplier', '0.50') if form_data is defined else '0.50' }}">
@@ -353,9 +354,9 @@
             <div class="row g-2 mb-3">
               <div class="col-4">
                 <label class="form-label small">Acquisition Multiple (×EBITDA)</label>
-                <input type="number" step="0.1" min="1" max="30" name="acquisition_multiple"
+                <input type="number" step="0.1" min="3" max="15" name="acquisition_multiple"
                   class="form-control form-control-sm"
-                  value="{{ form_data.get('acquisition_multiple', '7.0') if form_data is defined else '7.0' }}">
+                  value="{{ form_data.get('acquisition_multiple', '5.0') if form_data is defined else '5.0' }}">
               </div>
               <div class="col-4">
                 <label class="form-label small">% Acquired (0–1)</label>
@@ -512,6 +513,8 @@
             <span><i class="bi bi-calendar3 me-2"></i>5-Year Projections ($000s)</span>
             {% if proj_source is defined and proj_source == 'ocr' %}
               <span class="badge bg-success" style="font-size:.65rem;"><i class="bi bi-file-earmark-text me-1"></i>From document</span>
+            {% elif proj_source is defined and proj_source == 'manual_required' %}
+              <span class="badge bg-warning text-dark" style="font-size:.65rem;"><i class="bi bi-pencil me-1"></i>Enter manually — no historical data</span>
             {% else %}
               <span class="badge bg-secondary" style="font-size:.65rem;"><i class="bi bi-calculator me-1"></i>Auto-calculated from historical avg</span>
             {% endif %}

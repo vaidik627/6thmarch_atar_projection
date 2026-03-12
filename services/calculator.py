@@ -76,23 +76,33 @@ def run_calculations(inputs: dict) -> dict:
     D11 = _f(inputs.get('building_land_multiplier', 0.50))
     E11 = C11 * D11
 
-    # Term Loans / Cashflow: use extracted balance if available;
-    # otherwise fall back to adj_ebitda_fy3 × leverage_multiple (user-configurable, default 3.5×).
-    # If adj_ebitda_fy3 is null/0, derive it from reported_ebitda_fy3 + adjustments_fy3 (PF EBITDA).
+    # Term Loans / Cashflow. Fallback chain (mirrors excel_export.py):
+    # 1. explicit existing_term_loans (any non-None value, including 0 = user said no debt)
+    # 2. line_of_credit + current_lt_debt (balance sheet components)
+    # 3. adj_ebitda_fy3 × leverage_multiple (default 3.5×)
+    # 4. derive adj_ebitda from reported_ebitda_fy3 + adjustments_fy3 if adj_ebitda null
     _existing_tl = inputs.get('existing_term_loans')
-    if _existing_tl is not None and _f(_existing_tl) > 0:
+    if _existing_tl is not None:
+        # User explicitly set a value (even 0 means "no debt") — use it directly
         C12 = _f(_existing_tl)
     else:
-        _leverage_mult = _f(inputs.get('leverage_multiple', 3.5))
-        _adj_ebitda3_raw = inputs.get('adj_ebitda_fy3')
-        _adj_ebitda3 = _f(_adj_ebitda3_raw) if _adj_ebitda3_raw is not None else 0.0
-        # If adj_ebitda_fy3 is null or 0, try to derive from reported_ebitda + adjustments
-        if _adj_ebitda3 == 0.0:
-            _rep3 = inputs.get('reported_ebitda_fy3')
-            _adjs3 = inputs.get('adjustments_fy3')
-            if _rep3 is not None and _adjs3 is not None:
-                _adj_ebitda3 = _f(_rep3) + _f(_adjs3)
-        C12 = round(_adj_ebitda3 * _leverage_mult, 2) if _adj_ebitda3 > 0 else 0.0
+        # Tier 2: balance sheet components
+        _loc  = inputs.get('line_of_credit')
+        _cltd = inputs.get('current_lt_debt')
+        if _loc is not None or _cltd is not None:
+            C12 = (_f(_loc) if _loc is not None else 0.0) + (_f(_cltd) if _cltd is not None else 0.0)
+        else:
+            # Tier 3: EBITDA × leverage
+            _leverage_mult = _f(inputs.get('leverage_multiple', 3.5))
+            _adj_ebitda3_raw = inputs.get('adj_ebitda_fy3')
+            _adj_ebitda3 = _f(_adj_ebitda3_raw) if _adj_ebitda3_raw is not None else 0.0
+            # Tier 4: derive from reported + adjustments if adj_ebitda null/0
+            if _adj_ebitda3 == 0.0:
+                _rep3  = inputs.get('reported_ebitda_fy3')
+                _adjs3 = inputs.get('adjustments_fy3')
+                if _rep3 is not None and _adjs3 is not None:
+                    _adj_ebitda3 = _f(_rep3) + _f(_adjs3)
+            C12 = round(_adj_ebitda3 * _leverage_mult, 2) if _adj_ebitda3 > 0 else 0.0
     E12 = C12
 
     C14 = _f(inputs.get('seller_note', 0))             # Seller Note

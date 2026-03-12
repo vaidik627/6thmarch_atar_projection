@@ -6,6 +6,7 @@ import logging
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_file, make_response
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from services.ocr_service import extract_text_from_pdf, verify_ocr_connection
 from services.llm_service import extract_financial_fields, verify_llm_connection, fill_missing_projections, generate_risk_analysis
@@ -158,6 +159,134 @@ def upload():
         projections, proj_source = fill_missing_projections(extracted)
         logger.info(f"PROJECTIONS ✔ Source: {proj_source} — {sum(1 for v in projections.values() if v is not None)} values populated")
 
+        # Inject deal-term defaults not provided by LLM extraction (Jira: default 5x, D7=75%)
+        if extracted.get('acquisition_multiple') is None:
+            extracted['acquisition_multiple'] = 5.0
+        if extracted.get('net_revenue_multiplier') is None:
+            extracted['net_revenue_multiplier'] = 0.75
+
+        # ── GP Fallback Chain (Tiers 1–4) ────────────────────────────────────
+        # Runs after extract_financial_fields() — fills any remaining null GP fields.
+        # Uses gross_margin_fyN as the GP key (codebase naming convention).
+        for _yr in ('fy1', 'fy2', 'fy3'):
+            _gp_key   = f'gross_margin_{_yr}'
+            _cogs_key = f'cogs_{_yr}'
+            _rev_key  = f'revenue_{_yr}'
+            # Tier 1: GP = Revenue − COGS
+            if (extracted.get(_gp_key) is None
+                    and extracted.get(_cogs_key) is not None
+                    and extracted.get(_rev_key) is not None):
+                _calc_gp = extracted[_rev_key] - extracted[_cogs_key]
+                if _calc_gp > 0:
+                    extracted[_gp_key] = round(_calc_gp, 2)
+                    extracted.setdefault('gp_source', 'GP=Sales-COGS')
+                    logger.info(f"  GP Tier 1: {_gp_key}={_calc_gp:,.0f} (Revenue-COGS)")
+                else:
+                    validation_flags[_gp_key] = {
+                        'status': 'warning',
+                        'message': f'Calculated GP is negative ({_calc_gp:,.0f}). Review COGS.'
+                    }
+
+        # Tier 2: COGS from inventory components (only when GP and COGS both still null)
+        _needs_inv = any(
+            extracted.get(f'gross_margin_{yr}') is None
+            and extracted.get(f'cogs_{yr}') is None
+            for yr in ('fy1', 'fy2', 'fy3')
+        )
+        if _needs_inv:
+            from services.cogs_extractor import extract_inventory_text
+            from services.llm_service import _extract_inventory_fields_focused
+            _inv_fy_years = tuple(session.get('detected_fy_years', [0, 0, 0]))
+            _inv_client = OpenAI(
+                base_url=os.getenv('NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1'),
+                api_key=os.getenv('NVIDIA_API_KEY')
+            )
+            _scoped_inv = extract_inventory_text(ocr_text)
+            _inv_json = (
+                _extract_inventory_fields_focused(_inv_client, _scoped_inv, _inv_fy_years)
+                if _scoped_inv else None
+            )
+            if _inv_json:
+                for _k, _v in _inv_json.items():
+                    if _v is not None:
+                        extracted[_k] = _v
+
+            for _yr, _prev in (('fy1', 'fy0'), ('fy2', 'fy1'), ('fy3', 'fy2')):
+                _gp_key   = f'gross_margin_{_yr}'
+                _cogs_key = f'cogs_{_yr}'
+                _rev_key  = f'revenue_{_yr}'
+                if extracted.get(_gp_key) is not None:
+                    continue
+                _end_inv   = extracted.get(f'end_inventory_{_yr}')
+                _beg_inv   = extracted.get(f'end_inventory_{_prev}')
+                _purchases = extracted.get(f'purchases_{_yr}')
+                if _beg_inv is None and _end_inv is not None:
+                    _beg_inv = round(_end_inv * 0.95, 2)
+                    extracted.setdefault('gp_source', 'COGS=Inventory Calc (estimated beg. inventory)')
+                else:
+                    extracted.setdefault('gp_source', 'COGS=Inventory Calc')
+                if _purchases is None:
+                    continue
+                if _beg_inv is not None and _end_inv is not None:
+                    _cogs_calc = _beg_inv + _purchases - _end_inv
+                    if _cogs_calc > 0:
+                        extracted[_cogs_key] = round(_cogs_calc, 2)
+                        if extracted.get(_rev_key) is not None:
+                            extracted[_gp_key] = round(extracted[_rev_key] - _cogs_calc, 2)
+                            logger.info(f"  GP Tier 2: {_gp_key}={extracted[_gp_key]:,.0f} (inv calc)")
+
+        # Tier 4: GP Margin Average (last resort)
+        _known_margins = []
+        for _yr in ('fy1', 'fy2', 'fy3'):
+            _gp  = extracted.get(f'gross_margin_{_yr}')
+            _rev = extracted.get(f'revenue_{_yr}')
+            if _gp is not None and _rev and _rev > 0:
+                _known_margins.append(_gp / _rev)
+        if _known_margins:
+            _avg_margin = max(0.05, min(sum(_known_margins) / len(_known_margins), 0.95))
+            for _yr in ('fy1', 'fy2', 'fy3'):
+                if extracted.get(f'gross_margin_{_yr}') is None:
+                    _rev = extracted.get(f'revenue_{_yr}')
+                    if _rev:
+                        extracted[f'gross_margin_{_yr}'] = round(_rev * _avg_margin, 2)
+                        extracted.setdefault('gp_source', 'GP Margin Average')
+                        logger.info(f"  GP Tier 4: gross_margin_{_yr}={extracted[f'gross_margin_{_yr}']:,.0f}")
+        else:
+            for _yr in ('fy1', 'fy2', 'fy3'):
+                if extracted.get(f'gross_margin_{_yr}') is None:
+                    validation_flags[f'gross_margin_{_yr}'] = {
+                        'status': 'error',
+                        'message': 'Gross Profit could not be extracted or calculated. Manual entry required.'
+                    }
+
+        # Projection fallback: apply avg GP margin to proj_revenue_y1..y5
+        if not extracted.get('proj_gp_y1'):
+            _proj_margins = []
+            for _yr in ('fy1', 'fy2', 'fy3'):
+                _gp  = extracted.get(f'gross_margin_{_yr}')
+                _rev = extracted.get(f'revenue_{_yr}')
+                if _gp is not None and _rev and _rev > 0:
+                    _proj_margins.append(_gp / _rev)
+            if _proj_margins:
+                _avg_proj_m = max(0.05, min(sum(_proj_margins) / len(_proj_margins), 0.95))
+                for _i in range(1, 6):
+                    _proj_rev = extracted.get(f'proj_revenue_y{_i}')
+                    if _proj_rev:
+                        extracted[f'proj_gp_y{_i}'] = round(_proj_rev * _avg_proj_m, 2)
+
+        # Derive GP margin % for all historical years
+        for _yr in ('fy1', 'fy2', 'fy3'):
+            _gp  = extracted.get(f'gross_margin_{_yr}')
+            _rev = extracted.get(f'revenue_{_yr}')
+            if _gp is not None and _rev and _rev > 0:
+                extracted[f'gp_margin_{_yr}'] = round((_gp / _rev) * 100, 2)
+
+        # Ensure gp_source is always set
+        if not extracted.get('gp_source'):
+            _any_gp = any(extracted.get(f'gross_margin_{yr}') is not None for yr in ('fy1', 'fy2', 'fy3'))
+            extracted['gp_source'] = 'CIM Extracted' if _any_gp else 'Not Available'
+        # ── END GP Fallback Chain ─────────────────────────────────────────────
+
         # Store in session
         session['session_id'] = session_id
         session['extracted'] = extracted
@@ -225,6 +354,7 @@ def calculate():
             pdf_filename=session.get('pdf_filename', ''),
             proj_defaults=session.get('projections', {}),
             proj_source=session.get('proj_source', 'calculated'),
+            detected_fy_years=session.get('detected_fy_years', []),
             manual_errors=manual_errors,
             form_data=form_data,
         )
