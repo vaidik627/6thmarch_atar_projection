@@ -46,16 +46,16 @@ Only these files may be changed. Do NOT touch anything else without explicit use
 
 ---
 
-## SOURCES SECTION — CURRENT STATUS (as of 2026-03-11)
+## SOURCES SECTION — CURRENT STATUS (as of 2026-03-13)
 
 ### What each Sources field is, how it's obtained, and its current state
 
 | Sources Line Item | How Obtained | Current Extraction State |
 |---|---|---|
-| Net Revenue (×0.75) | LLM extracts `net_revenue_collateral` = AR from Balance Sheet Dec-{yy3}A | ✅ Fixed 2026-03-11 — field description now says "Accounts Receivable from BALANCE SHEET"; Python guard nulls AR if AR=revenue exactly; ENH-4 revenue fallback removed |
-| Inventory (×0.7) | LLM extracts `inventory_collateral` from Balance Sheet single Inventory line | ⚠️ Sometimes reads 6,878 (correct), sometimes 6,147 (Dec-24A off-by-one) or 14,494 (borrowing base table) |
-| M&E Equipment (×0.50) | LLM extracts `me_equipment_collateral` = Net Book Value from Fixed Asset Schedule | ✅ Fixed in session 2026-03-11 — VALUE TREND rule: constant set = NBV |
-| Building & Land (×0.50) | LLM extracts `building_land_collateral` = Gross Cost from Fixed Asset Schedule | ✅ Fixed in session 2026-03-11 — CONSTANT ACROSS PERIODS rule identifies Gross Cost |
+| Net Revenue (×0.75) | LLM extracts `net_revenue_collateral` = AR from Balance Sheet Dec-{yy3}A | ✅ Fixed 2026-03-11 — "Accounts Receivable from BALANCE SHEET"; AR=revenue guard; ENH-4 removed |
+| Inventory (×0.7) | LLM extracts `inventory_collateral` from Balance Sheet single Inventory line | ❌ BUG-INV: reads 14,494 (borrowing base) instead of 6,878 (Balance Sheet) |
+| M&E Equipment (×0.50) | LLM extracts `me_equipment_collateral` from Fixed Asset Schedule | ⚠️ ROW-LABEL-FIRST rule in place; still occasionally swaps with Building |
+| Building & Land (×0.50) | LLM extracts `building_land_collateral` from Fixed Asset Schedule | ⚠️ ROW-LABEL-FIRST rule in place; still occasionally swaps with M&E |
 | Term Loans / Cashflow | `existing_term_loans` if found, else `adj_ebitda_fy3 × leverage_multiple`; if adj_ebitda null, derives from reported_ebitda + adjustments | ✅ Fallback working; derivation fallback added 2026-03-11 |
 | Seller Note | Manual input only (`seller_note`) | Manual — no extraction needed |
 | Earnout | Manual input only (`earnout`) | Manual — no extraction needed |
@@ -111,6 +111,10 @@ Multi-year P&L tables (e.g. FY22|FY23|FY24|FY25|Y1|Y2|Y3 = 7 columns) must NOT h
 ---
 
 ## COMPLETED TASKS
+
+- [x] SGA-REMOVAL-2026-03-13: Removed all SG&A extraction from `services/llm_service.py` only. All sga_fy1/2/3 and proj_sga_y1-y5 now hardcoded to 0 — no LLM extraction, no dummy data. Removed: `sga_fy1/2/3` + `proj_sga_y1..y5` from `EXTRACTION_SCHEMA`; SG&A EXTRACTION / ROW SELECTION / SIZE CHECK blocks from `_build_extraction_prompt()`; SGA from `_extract_revenue_fields_focused()`; SGA from `_revenue_override_keys` + cross-table guard + `_data_present_fyN` flags + `fields_null_after_merge` debug list. In `fill_missing_projections()`: removed `sg1/sg2/sg3`, `ocr_sga`, `hist_sg_set`, dedup call, `ocr_sga` from `has_ocr_proj`; replaced full SGA calc block with `for i in range(1,6): proj[f'sga_y{i}'] = 0`; removed `_sg_num`/`_avg_sga_pct`/Y4-Y5 SGA derivation.
+
+- [x] DEAL-VALUE-RECOMMENDATION-2026-03-13: Added Deal Value ($000s) input and Python-threshold Buy/Hold/Not to Buy verdict across 5 files. **index.html**: `deal_value` number input above "Company PDF". **app.py**: capture at upload → `session['deal_value']`; `_save_results()` / `_load_results()` updated to 4-tuple including `recommendation`; `/calculate` calls `generate_deal_recommendation()`; `/analysis` passes to template; `/export` discards with `_rec`. **review.html**: editable `deal_value` field in Deal Terms. **llm_service.py**: `generate_deal_recommendation()` — Python verdict (NOT TO BUY: FCCR<1.0 OR DSCR<1.0 OR MOIC<1.0; BUY: score≥3/4; HOLD otherwise), LLM writes 1-sentence rationale only. **analysis.html**: Deal Recommendation card with verdict badge, confidence bar, rationale, deal-breaker badges, metric tiles.
 
 - [x] ADJ-EBITDA-DEEPER-FIX-2026-03-11: Fixed adj_ebitda_fy3 contamination that survived the first fix (66K→231K Term Loans on Manta Ray). Root cause: HARD GUARD requires reported+adjustments non-null but both were null in latest run; confidence=0.60 passed the 0.60 threshold. (FIX-A) Added adj_ebitda CONFIDENCE GUARD in `llm_service.py`: any adj_ebitda with confidence < 0.70 is nulled (stricter than system-wide 0.60). (FIX-B) `calculator.py` Term Loans fallback now derives adj_ebitda from reported_ebitda_fy3 + adjustments_fy3 when adj_ebitda_fy3 is null/0 — enables PF EBITDA recovery even when adj_ebitda extraction fails. (FIX-C) Strengthened "Reported EBITDA" prompt block: added label variants (Reported EBITDA, Standalone EBITDA, Company EBITDA), explicit negative-value allowance, all-three-years requirement; updated FAIL rule to allow adj_ebitda > 0 when reported_ebitda < 0.
 
@@ -182,7 +186,7 @@ Multi-year P&L tables (e.g. FY22|FY23|FY24|FY25|Y1|Y2|Y3 = 7 columns) must NOT h
 - **HARD CAP**: years > current calendar year excluded (future projections, not historical data)
 - If fewer than 3 years found after both passes, infer backward from most recent
 - Detected years injected into LLM prompt for precise column matching
-- After extraction: `_data_present_fy1/2/3` flags added to `extracted` dict (True if revenue/GM/SGA non-null/non-zero for that year)
+- After extraction: `_data_present_fy1/2/3` flags added to `extracted` dict (True if revenue/GM non-null/non-zero for that year — SGA removed from check 2026-03-13)
   - These flags flow to UI: `analysis.html` dims empty historical columns; `review.html` shows "No data found" badge
   - `_data_present_*` keys use underscore prefix = internal flags, not shown as extraction fields
 
@@ -205,7 +209,7 @@ Multi-year P&L tables (e.g. FY22|FY23|FY24|FY25|Y1|Y2|Y3 = 7 columns) must NOT h
 - **If not found**: auto-calculate using `fill_missing_projections()` in `llm_service.py`:
   - Revenue: historical CAGR applied forward (capped -20% to +50%)
   - Gross Margin: average GM% × projected revenue
-  - SG&A: average SG&A% × projected revenue
+  - SG&A: **hardcoded 0** — extraction disabled 2026-03-13 (`proj['sga_y{i}'] = 0` for i in 1–5)
   - Interest expense: flat from most recent historical year
   - Adjustments: default 0
   - Term loan: blank for manual input

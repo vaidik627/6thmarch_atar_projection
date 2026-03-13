@@ -74,6 +74,25 @@
           </p>
 
           <form action="/upload" method="POST" enctype="multipart/form-data" id="uploadForm">
+
+            <div class="mb-4">
+              <label for="deal_value" class="form-label fw-semibold">
+                Deal Value
+                <span class="text-muted fw-normal small ms-1">($000s)</span>
+              </label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" name="deal_value" id="deal_value"
+                  class="form-control"
+                  placeholder="e.g. 50000"
+                  min="0" step="1" />
+                <span class="input-group-text">K</span>
+              </div>
+              <div class="form-text text-muted">
+                Proposed acquisition price. Used for Buy / Hold / Not to Buy recommendation in the analysis.
+              </div>
+            </div>
+
             <div class="mb-4">
               <label for="pdf_file" class="form-label fw-semibold">Company PDF</label>
               <div class="upload-area" id="uploadArea">

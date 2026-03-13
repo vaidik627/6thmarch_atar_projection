@@ -66,12 +66,19 @@ EXTRACTION_SCHEMA = {
     "gross_margin_fy1": "Gross profit/gross margin dollar amount for earliest fiscal year (in $000s). = Revenue minus Cost of Goods Sold.",
     "gross_margin_fy2": "Gross margin for middle fiscal year (in $000s).",
     "gross_margin_fy3": "Gross margin for most recent fiscal year (in $000s).",
+    # Historical SG&A (3 years)
+    "sga_fy1": 0,
+    "sga_fy2": 0,
+    "sga_fy3": 0,
+    # Projection SG&A (5 years)
+    "proj_sga_y1": 0,
+    "proj_sga_y2": 0,
+    "proj_sga_y3": 0,
+    "proj_sga_y4": 0,
+    "proj_sga_y5": 0,
     "cogs_fy1": "Cost of Revenue / COGS for earliest fiscal year in $000s. ALWAYS extract if row present — used as fallback to derive gross margin when GM row is missing. Accept labels: 'Cost of Goods Sold', 'COGS', 'Cost of Sales', 'Cost of Revenue', 'Direct Costs', 'Cost of Products'.",
     "cogs_fy2": "Cost of Revenue / COGS for middle fiscal year in $000s. ALWAYS extract if row present. Same label variants as cogs_fy1.",
     "cogs_fy3": "Cost of Revenue / COGS for most recent fiscal year in $000s. ALWAYS extract if row present. Same label variants as cogs_fy1.",
-    "sga_fy1": "Selling, General & Administrative expenses for earliest fiscal year (in $000s).",
-    "sga_fy2": "SG&A for middle fiscal year (in $000s).",
-    "sga_fy3": "SG&A for most recent fiscal year (in $000s).",
     "interest_expense_fy1": "Interest expense/(income) for earliest fiscal year (in $000s).",
     "interest_expense_fy2": "Interest expense for middle fiscal year (in $000s).",
     "interest_expense_fy3": "Interest expense for most recent fiscal year (in $000s).",
@@ -135,11 +142,6 @@ EXTRACTION_SCHEMA = {
     "proj_gross_margin_y3": "Projected gross margin Year 3 in $000s. Null if not in document.",
     "proj_gross_margin_y4": "Projected gross margin Year 4 in $000s. Null if not in document.",
     "proj_gross_margin_y5": "Projected gross margin Year 5 in $000s. Null if not in document.",
-    "proj_sga_y1": "Projected SG&A Year 1 in $000s. Null if not in document.",
-    "proj_sga_y2": "Projected SG&A Year 2 in $000s. Null if not in document.",
-    "proj_sga_y3": "Projected SG&A Year 3 in $000s. Null if not in document.",
-    "proj_sga_y4": "Projected SG&A Year 4 in $000s. Null if not in document.",
-    "proj_sga_y5": "Projected SG&A Year 5 in $000s. Null if not in document.",
     "effective_tax_rate": "Effective income tax rate as a decimal (e.g. 0.25 for 25%). LOOK FOR: 'effective tax rate', 'Tax (X%)' line in P&L, or derive as Tax Expense / EBT. Convert % to decimal: '25%' → 0.25. Use COMBINED effective rate, not statutory 21% federal rate alone. Acceptable range: 0.05 to 0.45. Return null if outside range or not found. Do NOT default to any value.",
     "proj_capex_y1": "Projected capital expenditures Year 1 in $000s. Search: projections table CapEx/Capital Expenditures/PP&E Additions row, LBO model, cash flow investing section. Return POSITIVE numbers. Null if not found.",
     "proj_capex_y2": "Projected capital expenditures Year 2 in $000s. Same rules as proj_capex_y1.",
@@ -1355,40 +1357,6 @@ GROSS MARGIN ROW EXTRACTION:
   IMPORTANT: If historical gross_margin returned null due to the sanity check failure
   above, ALSO return null for ALL proj_gross_margin_y1–y5 — the entire row is untrusted.
 
-SG&A / TOTAL OPERATING EXPENSES EXTRACTION (sga_fy1/2/3):
-  Extract the TOTAL OPERATING EXPENSES subtotal row, NOT individual sub-items.
-  P&L tables often break down operating expenses into lines like:
-    Selling expenses, Warehouse & Distribution, G&A, Amortization, R&D, IT, etc.
-  You MUST extract the SUBTOTAL row that aggregates all of these.
-
-  CRITICAL — CONSOLIDATED TABLE ONLY:
-    Many CIMs include segment-level P&Ls (e.g. "Industrial Segment", "Consumer Segment")
-    in SEPARATE tables AFTER the consolidated P&L. These segment tables have their own
-    SG&A rows that are MUCH SMALLER than the consolidated total.
-    You MUST extract SG&A ONLY from the CONSOLIDATED (company-wide) P&L table.
-    If a table title contains "Segment", "Division", "Industrial", "Consumer", or any
-    business unit name → it is a segment table. Do NOT use its SG&A values.
-
-  ACCEPT these subtotal row labels (case-insensitive):
-    "Total SG&A"              "Total Operating Expenses"    "Total OpEx"
-    "SG&A"                    "Selling, General & Admin"    "Total Selling & G&A"
-    "Operating Expenses"      "Total Expenses"              "Total G&A"
-    "SG&A Expenses"           "Total Overhead"
-
-  REJECT these as sga — they are sub-items, NOT the total:
-    "R&D"  "Research & Development"  "Amortization"  "Depreciation"
-    "Selling Expenses" (alone)  "G&A" (alone)  "Warehouse" (alone)
-    Any single line item that is clearly a sub-component
-
-  VALIDATION: sga should be SIGNIFICANTLY LARGER than any single sub-item.
-    If extracted sga matches R&D exactly (e.g. both are 1,102) → you selected
-    the wrong row. Re-extract from the TOTAL row. R&D is typically < 10% of total OpEx.
-    If sga < 10% of revenue for the same year → likely a segment-level value.
-    Re-extract from the consolidated total. Consolidated SG&A is 10%–60% of revenue.
-
-  The sga field should be in range 10%–60% of revenue for most businesses.
-  Apply the SAME rules to proj_sga_y1–y5 (same row, projection columns).
-
 CONSOLIDATED REVENUE RULE (ANTI-SEGMENT TRAP):
 Revenue must be the SINGLE consolidated top-line that equals the SUM of all segments.
 STEP 1 — Identify if the document has multiple revenue tables:
@@ -1411,25 +1379,40 @@ PLAUSIBILITY CHECK: implied_gm_pct = (revenue - cogs) / revenue
   - If implied_gm_pct < 10% → reject. If implied_gm_pct > 85% → reject (sub-line).
   - If extracted COGS < 10% of revenue → return null for COGS.
 
-SGA ROW SELECTION RULE — SIZE AND LABEL CHECK:
-STEP 1: SGA is typically the LARGEST single operating expense line, 10-40% of revenue.
-STEP 2: Reject R&D, Advertising, Marketing, E-Commerce, Total Operating Expenses as SGA.
-STEP 3: Find row labeled 'Selling, General & Administrative', 'SG&A', 'SG&A Expenses'.
-STEP 4: If no SGA row found → return null. Do NOT substitute R&D or Total OpEx.
-SIZE SANITY CHECK: SGA must be > 3% and < 60% of revenue.
+SG&A EXTRACTION
+SG&A means Selling, General & Administrative expenses.
+Extract sga_fy1 (for year {fy1}), sga_fy2 (for year {fy2}), sga_fy3 (for year {fy3}).
 
-SGA SIZE CHECK — SCOPE RESTRICTION:
-The SGA percentage sanity check (must be 3% to 60% of revenue) applies ONLY to
-historical SGA fields: sga_fy1, sga_fy2, sga_fy3.
-DO NOT apply any percentage or size check to projection SGA fields:
-  proj_sga_y1, proj_sga_y2, proj_sga_y3, proj_sga_y4, proj_sga_y5
-For projection SGA: extract any value labeled 'SG&A', 'Selling General Administrative',
-or 'Operating Expenses' in the forecast columns, without size validation.
-Projections reflect management's forward cost structure — they may differ significantly
-from historical ratios and should never be rejected on a percentage basis.
-ALSO: Apply the Year-Anchor Rule (Section A) to projection SGA columns.
-Forecast columns are labeled Y1/Y2/Y3 or {proj_y1}F / {proj_y2}F / {proj_y3}F.
-Match the column label before extracting — do not read projection values positionally.
+ROW SELECTION RULE
+Accept rows labelled: 'SG&A', 'SG&A Expenses', 'Selling General & Administrative',
+'General & Administrative', 'Operating Expenses' (when below Gross Profit only),
+'Overhead', 'Corporate Overhead'.
+FORBIDDEN rows: COGS, Cost of Revenue, Cost of Sales, Segment Operating Expense,
+any row above the Gross Profit line.
+
+CONSOLIDATED TABLE RULE
+Always read from the consolidated P&L table — the same table used for Revenue and
+Gross Margin.  Do NOT read from segment sub-tables or department breakdowns.
+
+COLUMN ASSIGNMENT RULE
+sga_fy1 = value in the {fy1} column of that row.
+sga_fy2 = value in the {fy2} column of that row.
+sga_fy3 = value in the {fy3} column of that row.
+WRONG: assigning the {fy2} value to sga_fy1.
+CORRECT: each fyN key gets the value from the column whose header matches fyN exactly.
+
+SIZE CHECK
+SG&A must be LESS THAN Revenue for the same year.
+If sga_fyN >= revenue_fyN, set sga_fyN = null (contamination signal).
+If sga_fyN / revenue_fyN > 0.60, set sga_fyN = null (cross-table contamination signal).
+Example wrong: sga_fy3 = 96,100 when revenue_fy3 = 96,100 (equals revenue — reject).
+Example correct: sga_fy3 = 28,812 when revenue_fy3 = 96,100 (30.0% — accept).
+
+ABSENT SG&A
+If no SG&A row exists in the document, return null for all sga_fyN fields.
+Do NOT invent or estimate SG&A values.
+
+Return: sga_fy1, sga_fy2, sga_fy3 as numbers ($000s) or null.
 
 ════════════════════════════════════════════════════════════
 SECTION C — FORMULA DERIVATION CHAIN
@@ -1676,8 +1659,6 @@ Before writing your final JSON, verify each item:
   [ ] Month-year format: "Dec-23A" recognized as FY2023, "Dec-25A" as FY2025
   [ ] Revenue: extracted from the CONSOLIDATED table (largest revenue), not a segment sub-table
   [ ] Consolidated cross-check: extracted revenue >= any individual segment revenue in document
-  [ ] SG&A: extracted TOTAL subtotal row — NOT R&D alone, NOT Selling alone, NOT any single sub-item
-  [ ] SG&A validation: extracted value significantly > any single sub-component (e.g. R&D, D&A)
   [ ] building_land_collateral: extracted from a row labeled "Building"/"Land"/"Real Estate" — NOT inferred from being constant or larger than M&E
   [ ] Collateral anti-swap: me_equipment citation references M&E/Equipment/Warehouse Equipment label; building_land citation references Building/Land label — labels must not be swapped
   [ ] reported_ebitda: extracted from the EBITDA row BEFORE the add-backs section (smaller than adj_ebitda)
@@ -1685,6 +1666,8 @@ Before writing your final JSON, verify each item:
   [ ] adj_ebitda >= reported_ebitda: adjusted must be ≥ base EBITDA (add-backs are always positive)
   [ ] line_of_credit: revolving credit/ABL balance from most recent balance sheet — null if not found
   [ ] current_lt_debt: current portion of LTD from most recent balance sheet — null if not found
+  [ ] sga_fy1/fy2/fy3: read from consolidated P&L only (not segment tables, not COGS rows)
+  [ ] sga_fyN: each value is less than its corresponding revenue_fyN — return null if >= revenue or ratio > 0.60
 
 ════════════════════════════════════════════════════════════
 SECTION G — COLLATERAL FIELD EXTRACTION RULES (Balance Sheet / Fixed Asset Schedule Only)
@@ -1778,12 +1761,12 @@ Return ONLY the JSON below. No prose. No markdown. No explanation.
   "gross_margin_fy1":         {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "gross_margin_fy2":         {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "gross_margin_fy3":         {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "cogs_fy1":                 {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "cogs_fy2":                 {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "cogs_fy3":                 {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "sga_fy1":                  {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "sga_fy2":                  {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "sga_fy3":                  {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
+  "cogs_fy1":                 {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
+  "cogs_fy2":                 {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
+  "cogs_fy3":                 {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "interest_expense_fy1":     {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "interest_expense_fy2":     {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "interest_expense_fy3":     {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
@@ -1808,11 +1791,6 @@ Return ONLY the JSON below. No prose. No markdown. No explanation.
   "proj_gross_margin_y3":     {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "proj_gross_margin_y4":     {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "proj_gross_margin_y5":     {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "proj_sga_y1":              {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "proj_sga_y2":              {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "proj_sga_y3":              {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "proj_sga_y4":              {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "proj_sga_y5":              {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "effective_tax_rate":       {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "proj_capex_y1":            {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "proj_capex_y2":            {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
@@ -2139,14 +2117,14 @@ def _extract_revenue_fields_focused(client, scoped_text: str,
         "Return JSON only — no prose, no markdown fences."
     )
     user_prompt = (
-        f"You are extracting revenue, gross margin, and SG&A from a scoped P&L table.\n"
+        f"You are extracting revenue and gross margin from a scoped P&L table.\n"
         f"Fiscal years: fy1={y1}, fy2={y2}, fy3={y3} (most recent historical).\n"
         f"All values in $000s. If the document uses $M, multiply by 1000.\n\n"
         f"Rules:\n"
         f"- Extract TOTAL consolidated top-line revenue only (highest value row).\n"
         f"- FORBIDDEN: geographic breakdowns, segment rows, product rows.\n"
         f"- Gross margin = Revenue - COGS. If gross_margin_% shown, derive: gross_margin = revenue x pct.\n"
-        f"- SG&A: find row labeled SG&A / Selling General Administrative. Return null if not found.\n"
+        f"- Extract SG&A (sga_fy1/2/3): 'SG&A'/'Selling General & Administrative' row, below Gross Profit, same consolidated table. Use {y1}/{y2}/{y3} column headers. Return null if not found — do not estimate.\n"
         f"- For each field: return null if not clearly present — do NOT guess.\n"
         f"- confidence: 0.0-1.0 (use 0.9 for clearly stated, 0.7 for derived, 0.5 for uncertain).\n\n"
         f"Scoped table:\n{scoped_text[:3000]}\n\n"
@@ -2596,28 +2574,44 @@ DOCUMENT TEXT:
                         f"— possible segment row]"
                     )
 
-    # ── SG&A magnitude sanity check ───────────────────────────────────────────
-    # If sga < 10% of revenue for the same year, it may be a segment-level figure.
-    # Flag with low confidence so the review page shows a warning.
+    # ── SG&A CONTAMINATION GUARD + CALCULATED FALLBACK ──────────────────────
     for _n in (1, 2, 3):
-        _sga = extracted.get(f'sga_fy{_n}')
-        _rev = extracted.get(f'revenue_fy{_n}')
-        if _sga is not None and _rev is not None and _rev > 0 and _sga > 0:
-            _sga_pct = _sga / _rev
-            if _sga_pct < 0.05:
-                logger.warning(
-                    f"  SGA fy{_n} POSSIBLE SEGMENT VALUE: sga={_sga:,.0f} "
-                    f"is only {_sga_pct:.1%} of revenue={_rev:,.0f} "
-                    f"— may be segment SG&A not consolidated total"
-                )
-                confidences[f'sga_fy{_n}'] = min(
-                    confidences.get(f'sga_fy{_n}', 0.55), 0.55
-                )
-                citations[f'sga_fy{_n}'] = (
-                    (citations.get(f'sga_fy{_n}') or '') +
-                    f" [WARNING: sga={_sga:,.0f} is {_sga_pct:.1%} of revenue "
-                    f"— possible segment row]"
-                )
+        _sga_key = f'sga_fy{_n}'
+        _rev_key = f'revenue_fy{_n}'
+        _gm_key  = f'gross_margin_fy{_n}'
+        _ebi_key = f'adj_ebitda_fy{_n}'
+
+        _sga = extracted.get(_sga_key)
+        _rev = extracted.get(_rev_key)
+        _gm  = extracted.get(_gm_key)
+        _ebi = extracted.get(_ebi_key)
+
+        # Guard 1: reject if SG&A equals or exceeds revenue
+        if _sga is not None and _rev is not None and _rev > 0:
+            if _sga >= _rev:
+                logger.warning(f'SGA_GUARD: sga_fy{_n} {_sga} >= rev {_rev} — nulled')
+                _sga = None
+                extracted[_sga_key] = None
+
+        # Guard 2: reject if SG&A > 60% of revenue (cross-table contamination)
+        if _sga is not None and _rev is not None and _rev > 0:
+            if (_sga / _rev) > 0.60:
+                logger.warning(f'SGA_GUARD: sga_fy{_n} {_sga} is >{_sga/_rev:.1%} of rev — nulled')
+                _sga = None
+                extracted[_sga_key] = None
+
+        # Calculated fallback: GM - Adj.EBITDA when SG&A is absent
+        if _sga is None and _gm is not None and _ebi is not None:
+            if _gm > 0 and _ebi is not None:
+                _calc = _gm - _ebi
+                if _calc > 0:
+                    logger.info(f'SGA_CALC: sga_fy{_n} derived as GM-EBITDA = {_calc}')
+                    extracted[_sga_key] = _calc
+
+        # Final sentinel: ensure key exists (0 = not extracted/not applicable)
+        if extracted.get(_sga_key) is None:
+            extracted[_sga_key] = 0
+    # ── END SG&A GUARD ────────────────────────────────────────────────────────
 
     # ── ENH-1: COGS fallback — derive gross_margin_fyN = revenue_fyN - cogs_fyN when GM is null ──
     for _n in (1, 2, 3):
@@ -2634,16 +2628,12 @@ DOCUMENT TEXT:
                 logger.info(f"  GM fy{_n} derived from COGS: {extracted[f'gross_margin_fy{_n}']}")
 
     # ── Cross-table contamination guard ──────────────────────────────────────
-    # If gross_margin or sga is <5% of revenue for a company with >$5M revenue,
-    # the LLM read these fields from a segment/subsidiary table rather than the
-    # consolidated P&L.  Null them out — fill_missing_projections() will
-    # auto-calculate from historical averages, which is better than segment garbage.
-    # This threshold is general: <5% GM is only possible for pure commodity
-    # pass-throughs; <5% SGA is impossible for any real operating company at scale.
+    # If gross_margin is <5% of revenue for a company with >$5M revenue,
+    # the LLM read gross_margin from a segment/subsidiary table rather than the
+    # consolidated P&L.  Null it out — COGS fallback will re-derive.
     for _n in (1, 2, 3):
         _rev = extracted.get(f'revenue_fy{_n}')
         _gm  = extracted.get(f'gross_margin_fy{_n}')
-        _sga = extracted.get(f'sga_fy{_n}')
         if _rev is not None and float(_rev) > 5000:
             if _gm is not None and float(_rev) > 0 and float(_gm) / float(_rev) < 0.05:
                 logger.warning(
@@ -2651,12 +2641,6 @@ DOCUMENT TEXT:
                     f"revenue_fy{_n}={_rev} — nulling (wrong-table signal)"
                 )
                 extracted[f'gross_margin_fy{_n}'] = None
-            if _sga is not None and float(_rev) > 0 and float(_sga) / float(_rev) < 0.05:
-                logger.warning(
-                    f"  Cross-table guard: sga_fy{_n}={_sga} is <5% of "
-                    f"revenue_fy{_n}={_rev} — nulling (wrong-table signal)"
-                )
-                extracted[f'sga_fy{_n}'] = None
 
     # ── Adj. EBITDA derivation fallback ──────────────────────────────────────
     # If adj_ebitda_fyN is null after all passes but gross_margin + sga are present,
@@ -2978,7 +2962,7 @@ def fill_missing_projections(extracted: dict) -> tuple[dict, str]:
     # Historical values
     rev1, rev2, rev3 = _f('revenue_fy1'), _f('revenue_fy2'), _f('revenue_fy3')
     gm1,  gm2,  gm3  = _f('gross_margin_fy1'), _f('gross_margin_fy2'), _f('gross_margin_fy3')
-    sg1,  sg2,  sg3   = _f('sga_fy1'), _f('sga_fy2'), _f('sga_fy3')
+    sg1,  sg2,  sg3  = _f('sga_fy1'), _f('sga_fy2'), _f('sga_fy3')
     int3 = _f('interest_expense_fy3') or _f('interest_expense_fy2') or _f('interest_expense_fy1')
 
     # Check if LLM found any OCR projections
@@ -3075,20 +3059,31 @@ def fill_missing_projections(extracted: dict) -> tuple[dict, str]:
             proj[f'gross_margin_y{i}'] = round(float(rev_yi) * avg_gm_pct, 2) if rev_yi else None
         logger.info(f"  Projections: gross margin auto-calculated at {avg_gm_pct:.1%} avg GM%")
 
-    # ── SG&A ─────────────────────────────────────────────────────────────────
-    if has_ocr_proj and any(v is not None for v in ocr_sga):
-        for i in range(1, 6):
-            proj[f'sga_y{i}'] = _coerce_numeric(ocr_sga[i - 1])
-    else:
-        sga_pcts = []
-        for rev, sg in [(rev1, sg1), (rev2, sg2), (rev3, sg3)]:
-            if rev and sg and rev > 0:
-                sga_pcts.append(sg / rev)
-        avg_sga_pct = sum(sga_pcts) / len(sga_pcts) if sga_pcts else 0.20
-        for i in range(1, 6):
-            rev_yi = proj.get(f'revenue_y{i}')
-            proj[f'sga_y{i}'] = round(float(rev_yi) * avg_sga_pct, 2) if rev_yi else None
-        logger.info(f"  Projections: SG&A auto-calculated at {avg_sga_pct:.1%} avg SGA%")
+    # ── SG&A Projections: OCR-first → CAGR chain ────────────────────────────
+    _sga_cagr = 1.0
+    if sg3 and sg3 > 0 and sg1 and sg1 > 0:
+        try:
+            _sga_cagr = (sg3 / sg1) ** (1 / 2)   # 2-yr CAGR from fy1→fy3
+        except (ZeroDivisionError, ValueError):
+            _sga_cagr = 1.0
+
+    for i in range(1, 6):
+        _key = f'sga_y{i}'
+        # Priority 1: OCR document value
+        if i <= len(ocr_sga) and ocr_sga[i-1] is not None and ocr_sga[i-1] > 0:
+            proj[_key] = ocr_sga[i-1]
+            continue
+        # Priority 2: CAGR from most recent historical
+        if sg3 and sg3 > 0:
+            proj[_key] = round(sg3 * (_sga_cagr ** i), 1)
+            continue
+        # Priority 3: CAGR from earlier historical if sg3 absent
+        _base = sg2 if sg2 and sg2 > 0 else (sg1 if sg1 and sg1 > 0 else None)
+        if _base and _base > 0:
+            proj[_key] = round(_base * (_sga_cagr ** i), 1)
+            continue
+        # Priority 4: sentinel zero
+        proj[_key] = 0
 
     # ── Interest expense: flat from most recent historical ───────────────────
     for i in range(1, 6):
@@ -3127,10 +3122,10 @@ def fill_missing_projections(extracted: dict) -> tuple[dict, str]:
                 for i in range(1, 4)]
     _rev_den = [proj.get(f'revenue_y{i}') or extracted.get(f'revenue_fy{i}')
                 for i in range(1, 4)]
-    _sg_num  = [proj.get(f'sga_y{i}') or extracted.get(f'sga_fy{i}')
-                for i in range(1, 4)]
 
     _avg_gm_pct  = _avg_pct(_gm_num, _rev_den)
+
+    _sg_num = [proj.get(f'sga_y{i}') or extracted.get(f'sga_fy{i}') for i in range(1, 4)]
     _avg_sga_pct = _avg_pct(_sg_num, _rev_den)
 
     for _i in (4, 5):
@@ -3318,3 +3313,148 @@ def generate_risk_analysis(all_inputs: dict, results: dict) -> list:
                 time.sleep(2 ** attempt)
     logger.error("Risk analysis failed after 3 attempts — returning empty list")
     return []
+
+
+def generate_deal_recommendation(all_inputs: dict, results: dict, deal_value) -> dict:
+    """
+    Generate a Buy / Hold / Not to Buy / Sell recommendation grounded in actual computed metrics.
+
+    Verdict is determined by Python threshold rules — NOT by LLM inference.
+    LLM is used only to write a one-sentence rationale that cites actual numbers.
+    Returns: {'verdict': str, 'confidence': float, 'rationale': str, 'metrics': list}
+    """
+    def _fv(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # ── Extract actual computed metrics ───────────────────────────────────────
+    moic      = _fv(results.get('C29'))
+    fccr      = _fv(results.get('C57_fccr'))
+    dscr_d    = results.get('dscr', {})
+    dscr_y1   = _fv(dscr_d.get('Y1')) if isinstance(dscr_d, dict) else None
+    ebitda_fy3 = _fv(all_inputs.get('adj_ebitda_fy3'))
+    dv        = _fv(deal_value)
+
+    implied_multiple = None
+    if dv is not None and dv > 0 and ebitda_fy3 is not None and ebitda_fy3 > 0:
+        implied_multiple = round(dv / ebitda_fy3, 1)
+
+    # ── Build metrics list for display ────────────────────────────────────────
+    metrics = []
+    if dv is not None:
+        metrics.append({'label': 'Deal Value', 'value': f'${dv:,.0f}k', 'assessment': 'neutral'})
+    if moic is not None:
+        metrics.append({
+            'label': 'MOIC',
+            'value': f'{moic:.2f}x',
+            'assessment': 'positive' if moic >= 2.5 else ('neutral' if moic >= 1.5 else 'negative'),
+        })
+    if fccr is not None:
+        metrics.append({
+            'label': 'FCCR',
+            'value': f'{fccr:.2f}',
+            'assessment': 'positive' if fccr >= 1.10 else ('neutral' if fccr >= 1.0 else 'negative'),
+        })
+    if dscr_y1 is not None:
+        metrics.append({
+            'label': 'DSCR (Y1)',
+            'value': f'{dscr_y1:.2f}x',
+            'assessment': 'positive' if dscr_y1 >= 1.20 else ('neutral' if dscr_y1 >= 1.0 else 'negative'),
+        })
+    if implied_multiple is not None:
+        metrics.append({
+            'label': 'Implied EV/EBITDA',
+            'value': f'{implied_multiple:.1f}x',
+            'assessment': 'positive' if implied_multiple <= 8 else ('neutral' if implied_multiple <= 12 else 'negative'),
+        })
+
+    # ── Deterministic verdict via threshold rules ─────────────────────────────
+    deal_breakers = []
+    if fccr is not None and fccr < 1.0:
+        deal_breakers.append(f'FCCR {fccr:.2f} < 1.0 (cannot cover fixed charges)')
+    if dscr_y1 is not None and dscr_y1 < 1.0:
+        deal_breakers.append(f'DSCR(Y1) {dscr_y1:.2f} < 1.0 (insufficient debt service in Year 1)')
+    if moic is not None and moic < 1.0:
+        deal_breakers.append(f'MOIC {moic:.2f}x < 1.0 (value-destructive returns)')
+
+    if deal_breakers:
+        verdict = 'NOT TO BUY'
+        confidence = 0.90
+    elif moic is not None and fccr is not None and dscr_y1 is not None:
+        # Score each metric: 1 point if threshold met
+        score = sum([
+            moic >= 2.5,
+            fccr >= 1.10,
+            dscr_y1 >= 1.20,
+            implied_multiple is None or implied_multiple <= 10,
+        ])
+        if score >= 3:
+            verdict = 'BUY'
+            confidence = 0.85
+        elif score >= 2:
+            verdict = 'HOLD'
+            confidence = 0.75
+        else:
+            verdict = 'NOT TO BUY'
+            confidence = 0.80
+    elif moic is not None:
+        # Partial data — MOIC-only fallback
+        if moic >= 2.5:
+            verdict = 'BUY'
+            confidence = 0.70
+        elif moic >= 1.5:
+            verdict = 'HOLD'
+            confidence = 0.65
+        else:
+            verdict = 'NOT TO BUY'
+            confidence = 0.72
+    else:
+        verdict = 'HOLD'
+        confidence = 0.45  # insufficient data — needs manual review
+
+    # ── LLM rationale (one sentence, must cite actual numbers) ────────────────
+    company = all_inputs.get('company_name') or 'the target company'
+    metric_lines = '\n'.join(
+        f"- {m['label']}: {m['value']}" for m in metrics
+    )
+    breaker_text = ('\nDeal-breakers: ' + '; '.join(deal_breakers)) if deal_breakers else ''
+
+    rationale_prompt = (
+        f"Company: {company}\n"
+        f"Verdict: {verdict}\n"
+        f"Actual metrics:\n{metric_lines}{breaker_text}\n\n"
+        "Write exactly ONE sentence (max 35 words) explaining this verdict. "
+        "You MUST reference specific numeric values from the metrics above. "
+        "Do NOT invent numbers. Do NOT use hedging words like 'suggests' or 'appears'. "
+        "State facts only."
+    )
+
+    rationale = f"{verdict} based on computed deal metrics."
+    try:
+        client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=NVIDIA_API_KEY)
+        resp = client.chat.completions.create(
+            model=NVIDIA_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a PE deal analyst. Write factual, numbers-grounded rationale only."},
+                {"role": "user",   "content": rationale_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=120,
+        )
+        raw = (resp.choices[0].message.content or rationale).strip().strip('"').strip("'").strip()
+        if raw:
+            rationale = raw
+        logger.info(f"Recommendation: {verdict} (conf={confidence:.2f}) — {rationale[:80]}")
+    except Exception as exc:
+        logger.warning(f"Recommendation rationale LLM failed: {exc} — using fallback text")
+
+    return {
+        'verdict': verdict,
+        'confidence': confidence,
+        'rationale': rationale,
+        'metrics': metrics,
+        'deal_value': dv,
+        'deal_breakers': deal_breakers,
+    }

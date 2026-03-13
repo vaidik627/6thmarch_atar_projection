@@ -353,6 +353,18 @@
             <h6 class="fw-semibold text-muted small text-uppercase mb-2">Deal Terms ($000s)</h6>
             <div class="row g-2 mb-3">
               <div class="col-4">
+                <label class="form-label small">Deal Value ($000s)</label>
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">$</span>
+                  <input type="number" step="1" min="0" name="deal_value"
+                    class="form-control form-control-sm"
+                    placeholder="e.g. 50000"
+                    value="{{ deal_value if deal_value is not none else '' }}">
+                  <span class="input-group-text">K</span>
+                </div>
+                <div class="form-text text-muted" style="font-size:0.7rem;">Used for Buy / Hold / Not to Buy recommendation</div>
+              </div>
+              <div class="col-4">
                 <label class="form-label small">Acquisition Multiple (×EBITDA)</label>
                 <input type="number" step="0.1" min="3" max="15" name="acquisition_multiple"
                   class="form-control form-control-sm"

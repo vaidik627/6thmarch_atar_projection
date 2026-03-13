@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from services.ocr_service import extract_text_from_pdf, verify_ocr_connection
-from services.llm_service import extract_financial_fields, verify_llm_connection, fill_missing_projections, generate_risk_analysis
+from services.llm_service import extract_financial_fields, verify_llm_connection, fill_missing_projections, generate_risk_analysis, generate_deal_recommendation
 from services.calculator import run_calculations
 from services.validator import validate_extracted_fields, validate_manual_inputs
 from services.excel_export import generate_excel
@@ -55,7 +55,8 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def _save_results(session_id: str, results: dict, risk_analysis: list, all_inputs: dict = None) -> None:
+def _save_results(session_id: str, results: dict, risk_analysis: list,
+                   all_inputs: dict = None, recommendation: dict = None) -> None:
     """Persist calculation results to disk — avoids Flask 4KB cookie overflow."""
     os.makedirs(RESULTS_FOLDER, exist_ok=True)
     payload = {
@@ -63,6 +64,7 @@ def _save_results(session_id: str, results: dict, risk_analysis: list, all_input
         'results': results,
         'risk_analysis': risk_analysis,
         'all_inputs': all_inputs or {},
+        'recommendation': recommendation or {},
     }
     path = os.path.join(RESULTS_FOLDER, f"{session_id}_results.json")
     with open(path, 'w', encoding='utf-8') as f:
@@ -70,14 +72,19 @@ def _save_results(session_id: str, results: dict, risk_analysis: list, all_input
 
 
 def _load_results(session_id: str) -> tuple:
-    """Load calculation results from disk. Returns (results, risk_analysis, all_inputs) or ({}, [], {})."""
+    """Load calculation results from disk. Returns (results, risk_analysis, all_inputs, recommendation) or ({}, [], {}, {})."""
     path = os.path.join(RESULTS_FOLDER, f"{session_id}_results.json")
     try:
         with open(path, 'r', encoding='utf-8') as f:
             payload = json.load(f)
-        return payload.get('results', {}), payload.get('risk_analysis', []), payload.get('all_inputs', {})
+        return (
+            payload.get('results', {}),
+            payload.get('risk_analysis', []),
+            payload.get('all_inputs', {}),
+            payload.get('recommendation', {}),
+        )
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}, [], {}
+        return {}, [], {}, {}
 
 
 # Fields that must remain strings after form submission (not converted to float)
@@ -123,6 +130,8 @@ def upload():
     if not allowed_file(file.filename):
         flash('Only PDF files are allowed.', 'danger')
         return redirect(url_for('index'))
+
+    deal_value = safe_float(request.form.get('deal_value'))
 
     filename = secure_filename(file.filename)
     session_id = str(uuid.uuid4())[:8]
@@ -297,6 +306,7 @@ def upload():
         session['projections'] = projections
         session['proj_source'] = proj_source
         session['detected_fy_years'] = list(detected_fy_years)  # [y1, y2, y3] integers
+        session['deal_value'] = deal_value
 
         return redirect(url_for('review'))
 
@@ -320,6 +330,7 @@ def review():
         pdf_filename=session.get('pdf_filename', ''),
         proj_defaults=session.get('projections', {}),
         proj_source=session.get('proj_source', 'calculated'),
+        deal_value=session.get('deal_value'),
     )
 
 
@@ -355,6 +366,7 @@ def calculate():
             proj_defaults=session.get('projections', {}),
             proj_source=session.get('proj_source', 'calculated'),
             detected_fy_years=session.get('detected_fy_years', []),
+            deal_value=session.get('deal_value'),
             manual_errors=manual_errors,
             form_data=form_data,
         )
@@ -375,9 +387,16 @@ def calculate():
     # Generate risk analysis
     logger.info("RISK ▶ Generating risk analysis…")
     risk_analysis = generate_risk_analysis(all_inputs, results)
-    logger.info(f"RISK ✔ {len(risk_analysis)} risk factor(s) identified — redirecting to analysis")
+    logger.info(f"RISK ✔ {len(risk_analysis)} risk factor(s) identified")
 
-    _save_results(session['session_id'], results, risk_analysis, all_inputs)
+    # Generate deal recommendation
+    deal_value = session.get('deal_value')
+    all_inputs['deal_value'] = deal_value
+    logger.info("RECOMMENDATION ▶ Generating deal recommendation…")
+    recommendation = generate_deal_recommendation(all_inputs, results, deal_value)
+    logger.info(f"RECOMMENDATION ✔ Verdict: {recommendation.get('verdict', 'N/A')} — redirecting to analysis")
+
+    _save_results(session['session_id'], results, risk_analysis, all_inputs, recommendation=recommendation)
     session['calc_complete'] = True
     session['calc_timestamp'] = datetime.datetime.utcnow().isoformat()
 
@@ -389,7 +408,7 @@ def analysis():
     sid = session.get('session_id')
     if not sid:
         return redirect(url_for('index'))
-    results, risk_analysis, all_inputs = _load_results(sid)
+    results, risk_analysis, all_inputs, recommendation = _load_results(sid)
     if not results:
         # No results file found — redirect back to review
         return redirect(url_for('review'))
@@ -401,6 +420,7 @@ def analysis():
         pdf_filename=session.get('pdf_filename', ''),
         detected_fy_years=session.get('detected_fy_years', []),
         risk_analysis=risk_analysis,
+        recommendation=recommendation,
     ))
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Pragma'] = 'no-cache'
@@ -414,7 +434,7 @@ def export():
     if not sid:
         flash('No analysis available. Please start over.', 'warning')
         return redirect(url_for('index'))
-    results, _risk, all_inputs = _load_results(sid)
+    results, _risk, all_inputs, _rec = _load_results(sid)
     if not results:
         flash('No analysis available. Please start over.', 'warning')
         return redirect(url_for('index'))
