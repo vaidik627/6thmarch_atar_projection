@@ -77,7 +77,7 @@ When writing or debugging extraction logic, DO NOT produce code that would yield
 | `adjustments_fy1` | 3,959 | Add-backs total FY2023 | ✅ Active extraction |
 | `adjustments_fy2` | 5,088 | Add-backs total FY2024 | ❌ BUG-ADJ-FY2: reads 2,438 |
 | `adjustments_fy3` | 886 | Add-backs total FY2025 | ❌ BUG-ADJ-FY3: reads 394 |
-| `adj_ebitda_fy3` | 8,581 | FY2025 column ONLY — NOT Y1/Y2 projection columns | ❌ BUG-ADJ-EBITDA-FY3: reads null |
+| `adj_ebitda_fy3` | 0 | Extraction disabled 2026-03-13 | ⚠️ Hardcoded zero — not extracted |
 | `net_revenue_collateral` | 6,878 | AR from Balance Sheet Dec-25A | ✅ Active extraction |
 | `inventory_collateral` | 6,878 or 6,147 | Balance Sheet Dec-25A (NOT 14,494 borrowing base) | ❌ BUG-INV: reads 14,494 |
 | `me_equipment_collateral` | 14,634 | Fixed Asset Schedule — Warehouse Equipment row, Dec-25A | ✅ Active extraction |
@@ -94,7 +94,7 @@ List bugs that are confirmed but not yet fixed. Reference these when writing tas
 |---|---|---|---|---|
 | BUG-ADJ-FY2 | `adjustments_fy2` | 2,438 | 5,088 | LLM reading wrong column (year-shift) |
 | BUG-ADJ-FY3 | `adjustments_fy3` | 394 | 886 | LLM reading wrong column (year-shift) |
-| BUG-ADJ-EBITDA-FY3 | `adj_ebitda_fy3` | null | 8,581 | Confidence guard nulling it OR projection contamination |
+| ~~BUG-ADJ-EBITDA-FY3~~ | ~~`adj_ebitda_fy3`~~ | ~~null~~ | ~~8,581~~ | Extraction disabled 2026-03-13 — moot |
 | BUG-INV | `inventory_collateral` | 14,494 | 6,878 | LLM reading borrowing base table instead of Balance Sheet |
 | BUG-BLDG | `building_land_collateral` | 14,634 | 3,250 | M&E / Building swap still occurring |
 
@@ -111,7 +111,7 @@ List bugs that are confirmed but not yet fixed. Reference these when writing tas
 | Gross Margin extraction | ✅ Working | COGS fallback if GM null |
 | SG&A extraction | ✅ Active extraction | LLM + contamination guard (60% threshold) + GM−EBITDA fallback; OCR-first → CAGR projections |
 | Adjustments extraction | ⚠️ Partial | FY1 correct; FY2/FY3 year-shifted (see bugs above) |
-| Adj. EBITDA extraction | ⚠️ Partial | FY3 often null due to confidence guard / contamination |
+| Adj. EBITDA extraction | ⛔ Disabled | All adj_ebitda_fy1/2/3 hardcoded to 0 — extraction disabled 2026-03-13 |
 | Collateral — AR | ✅ Working | Balance Sheet only, AR=revenue guard |
 | Collateral — Inventory | ❌ Bug | Reads borrowing base (14,494) instead of BS (6,878) |
 | Collateral — M&E | ⚠️ Unreliable | Row-label-first rule in place; still swapping with Building |
@@ -147,9 +147,15 @@ These rules apply to every code change, regardless of task scope.
 - Guard 1: if `sga_fyN >= revenue_fyN` → null (SGA can never equal or exceed revenue)
 - Guard 2: if `sga_fyN / revenue_fyN > 0.60` → null (cross-table COGS contamination signal)
 - Threshold is 0.60, NOT 0.30 — Polytek SGA% is 30–34% which is normal for manufacturing/distribution
-- GM−EBITDA fallback: if SGA null after guards AND gross_margin + adj_ebitda both present → `sga = gm − ebitda`
-- Sentinel: if still null after fallback → set to 0 (Excel formulae require numeric)
+- GM−EBITDA fallback: **INACTIVE** — adj_ebitda extraction disabled, `_ebi = None` during SGA guard → fallback never triggers
+- Sentinel: if SGA null → set to 0 (Excel formulae require numeric)
 - Projections: OCR-first → 2-yr CAGR (fy1→fy3) → earlier hist base → sentinel 0
+
+### Adj. EBITDA — DO NOT RE-ENABLE
+- `adj_ebitda_fy1`, `adj_ebitda_fy2`, `adj_ebitda_fy3` are NOT in `EXTRACTION_SCHEMA` — do not add them back
+- `extract_financial_fields()` sets `extracted[f'adj_ebitda_fy{n}'] = 0` for n in 1–3 — do not change this
+- Any downstream code that reads `adj_ebitda_fy*` will receive `0` — calculator.py fallback handles this by deriving from `reported_ebitda + adjustments`
+- `validator.py` ENH-2 cross-check skips when `doc_ebitda = 0` — do not remove this guard
 
 ### Collateral Extraction (DO NOT CHANGE THESE RULES)
 - M&E: ROW-LABEL-FIRST — find "Warehouse Equipment"/"M&E"/"Equipment" row, extract most recent year
@@ -188,6 +194,14 @@ A task is complete ONLY when:
 ---
 
 ## COMPLETED TASKS
+
+- [x] ADJ-EBITDA-REMOVAL-2026-03-13: Removed all Adj. EBITDA extraction logic from `services/llm_service.py` and fixed false validator warning in `services/validator.py`. All adj_ebitda_fy1/2/3 now hardcoded to 0.
+  - **EXTRACTION_SCHEMA**: Removed `adj_ebitda_fy1/2/3` entries entirely.
+  - **`_build_extraction_prompt()`**: Removed EBITDA EXTRACTION PRIORITY block; item 3 (adj_ebitda) from THREE DISTINCT METRICS; MANDATORY VALIDATION block; ADJ. EBITDA LABEL MATCHING block; full fallback derivation chain (Options 1/2/3 + SCAN ALL SECTIONS + ALL-THREE-YEARS); CONTAMINATION GUARD (both examples + rule + verification); ADJ. EBITDA CROSS-CHECK; ADJUSTMENTS CROSS-CHECK RULE; 5 adj_ebitda checklist items from Section E; 3 adj_ebitda lines from JSON output schema; `adj_ebitda` from column extraction instruction (line ~897); `adj_ebitda × 8` validation rule.
+  - **SGA guard cleaned**: Removed `_ebi_key`/`_ebi` variable assignments and GM−EBITDA fallback block — fallback was only relevant when adj_ebitda was extracted. SGA guard now uses only revenue-based guards (Guard 1: SGA≥rev; Guard 2: SGA>60% rev).
+  - **`extract_financial_fields()`**: Removed 6 Python guard blocks: (1) Adj. EBITDA derivation fallback, (2) EBITDA cross-check, (3) Adj. EBITDA/Adjustments confusion guard, (4) Gross Margin reverse derivation, (5) HARD GUARD (200% discrepancy), (6) adj_ebitda CONFIDENCE GUARD. Added force-zero block after all guards: `for _n in (1,2,3): extracted[f'adj_ebitda_fy{_n}'] = 0`. Removed `adj_ebitda_fy3` from `fields_null_after_merge` debug list.
+  - **`services/validator.py`**: Added `if not doc_ebitda: continue` early guard to ENH-2 cross-check loop — prevents false "Calculated EBITDA differs X% from 0" warnings on every upload.
+  - **DO NOT MODIFY**: `calculator.py`, `excel_export.py`, `templates/`, `app.py`, `ocr_service.py`. These already handle adj_ebitda=0 gracefully via reported_ebitda+adjustments derivation fallbacks.
 
 - [x] SGA-REIMPLEMENTATION-2026-03-13: Re-implemented SG&A extraction in `services/llm_service.py` only, per spec SGA_Extraction_Implementation_Spec.pdf.
   - **Change 1 — EXTRACTION_SCHEMA**: Added `sga_fy1/2/3` (default 0) and `proj_sga_y1..y5` (default 0) keys after `gross_margin_fy3`.

@@ -85,9 +85,6 @@ EXTRACTION_SCHEMA = {
     "adjustments_fy1": "One-time/non-recurring items for earliest fiscal year (in $000s).",
     "adjustments_fy2": "One-time adjustments for middle fiscal year (in $000s).",
     "adjustments_fy3": "One-time adjustments for most recent fiscal year (in $000s).",
-    "adj_ebitda_fy1": "Adjusted EBITDA for earliest fiscal year in $000s. Accept ANY label (case-insensitive): 'Adj. EBITDA', 'Adjusted EBITDA', 'Adj EBITDA', 'EBITDA (Adjusted)', 'EBITDA (as adjusted)', 'Normalized EBITDA', 'Recurring EBITDA', 'EBITDA'. Prefer the row immediately following a 'Total Add-backs' or 'Non-Recurring Adjustments' subtotal. Fallback: derive as operating_income + adjustments (confidence 0.75). CRITICAL: Extract ONLY from the historical fy1 column — NEVER from E/F/P/B projection columns.",
-    "adj_ebitda_fy2": "Adjusted EBITDA for middle fiscal year in $000s. Same label variants and fallback as adj_ebitda_fy1. CRITICAL: Extract ONLY from the historical fy2 column — NEVER from E/F/P/B projection columns.",
-    "adj_ebitda_fy3": "Adjusted EBITDA for most recent fiscal year in $000s. Same label variants and fallback as adj_ebitda_fy1. CRITICAL: Extract ONLY from the historical fy3 column — NEVER from E/F/P/B projection columns even if they appear in the same row.",
     "net_revenue_collateral": (
         "Accounts Receivable (AR) or Trade Receivables from the BALANCE SHEET — most recent "
         "year (in $000s). MUST come from a row labeled 'Accounts Receivable', 'Trade Receivables', "
@@ -894,7 +891,7 @@ COMBINED OR SEPARATE TABLE — BOTH ARE VALID:
   2. From that row, read values under column headers matching {fy1}, {fy2}, {fy3}
      (including float variants {fy1}.0, {fy2}.0, {fy3}.0)
   3. Assign those values to revenue_fy1, revenue_fy2, revenue_fy3 respectively
-  4. Repeat for gross_margin, sga, interest_expense, adjustments, adj_ebitda rows
+  4. Repeat for gross_margin, sga, interest_expense, adjustments rows
   5. THEN extract proj_ values from columns {proj_y1}–{proj_y5} in the SAME or separate table
 
   CRITICAL: A projection column header like "{proj_y1}" or "{proj_y1}E" does NOT
@@ -1349,8 +1346,6 @@ GROSS MARGIN ROW EXTRACTION:
   CRITICAL ACCOUNTING SANITY CHECK (apply before writing to JSON):
     ✗ If extracted gross_margin for a year >= revenue for the same year → WRONG ROW.
       Return null for that year. The backend will derive it from EBITDA automatically.
-    ✗ If revenue is null but gross_margin > adj_ebitda × 8 for that year →
-      likely wrong row. Return null — backend will derive it.
     ✓ Correct: gross_margin is always POSITIVE and LESS THAN revenue.
 
   Apply the SAME rules to proj_gross_margin_y1–y5 (same row, projection columns).
@@ -1432,21 +1427,6 @@ Set confidence = 0.75 for all derived values. Cite the formula in citation.
   DSCR               = CFADS / Total Debt Service
   FCCR               = (Adj. EBITDA − CAPEX) / Total Debt Service
 
-EBITDA EXTRACTION PRIORITY — Use in order, stop at first successful result:
-  TIER 1 — STATED (highest priority):
-    Find a row explicitly labeled 'Adjusted EBITDA', 'Adj. EBITDA', 'EBITDA (as adjusted)',
-    'Normalized EBITDA', 'Pro Forma EBITDA', 'Recurring EBITDA'. Use this value directly.
-  TIER 2 — DERIVED FROM GROSS MARGIN:
-    If Gross Margin is available: adj_ebitda = GM - SGA + non_recurring_adjustments.
-  TIER 3 — BUILD-UP FROM OPERATING INCOME:
-    If Operating Income is available: adj_ebitda = Op_Income + D&A + adjustments.
-  TIER 4 — STATED EBITDA + ADJUSTMENTS:
-    If an unadjusted EBITDA row exists: adj_ebitda = EBITDA + non_recurring_adjustments.
-  TIER 5 — NULL:
-    If none of Tiers 1-4 produce a confident result, return null.
-    NEVER return 0 as a substitute for null on adj_ebitda.
-    NEVER guess or interpolate EBITDA from other metrics.
-
 EBITDA — THREE DISTINCT METRICS (CRITICAL — DO NOT CONFUSE THEM):
   The P&L has THREE separate EBITDA-related line items. Extract each into its own field.
 
@@ -1467,116 +1447,6 @@ EBITDA — THREE DISTINCT METRICS (CRITICAL — DO NOT CONFUSE THEM):
      These are the SMALLER numbers in the EBITDA bridge section.
      Example magnitude: 405 / 1,797 / 549 (small relative to EBITDA)
 
-  3. ADJUSTED EBITDA → adj_ebitda_fy1/fy2/fy3:
-     The FINAL VALUE AFTER ADD-BACKS. Equals Reported EBITDA + Adjustments.
-     Labels: 'Adj. EBITDA', 'Adjusted EBITDA', 'Pro Forma EBITDA', 'Normalized EBITDA'
-     This is ALWAYS LARGER than Reported EBITDA.
-     Example magnitude: 21,632 / 10,918 / 8,581 (large — close to reported EBITDA)
-
-  MANDATORY VALIDATION before writing to JSON:
-    ✗ FAIL if adj_ebitda ≈ adjustments (within 20%): you put add-back amounts into
-      the Adjusted EBITDA field. This is wrong. Re-find the true Adjusted EBITDA row
-      (it appears AFTER the add-backs and is MUCH LARGER than the add-back amounts).
-    ✗ FAIL if adj_ebitda < reported_ebitda AND both are positive: impossible — add-backs are positive.
-      Exception: reported_ebitda can be negative while adj_ebitda is positive (PF add-backs exceed loss).
-    ✓ PASS: adj_ebitda = reported_ebitda + adjustments (approximately)
-    ✓ PASS: adj_ebitda significantly LARGER than adjustments alone
-
-ADJ. EBITDA LABEL MATCHING — check these in order before deriving:
-  Accepted row labels (case-insensitive):
-    "Adj. EBITDA"  |  "Adjusted EBITDA"  |  "Adj EBITDA"
-    "EBITDA (Adjusted)"  |  "EBITDA (as adjusted)"
-    "Normalized EBITDA"  |  "Recurring EBITDA"
-    "PF Adj. EBITDA"  |  "Pro Forma Adj. EBITDA"
-    "EBITDA"   ← also accept plain EBITDA label (common in CIMs without formal adjustments)
-  Preferred source: the row immediately following a "Total Add-backs" or
-    "Non-Recurring Adjustments" subtotal row.
-  IMPORTANT: The Adjusted EBITDA row is the FINAL SUBTOTAL in the EBITDA bridge table.
-    Its value is LARGER than the plain "EBITDA" row (because add-backs increase it).
-    Example structure: EBITDA (8,581) → Add-backs (+886) → Adj. EBITDA (9,467)
-    If two rows match (e.g. "EBITDA" and "Adj. EBITDA") → use the LARGER value.
-  For the most recent fiscal year (fy3={fy3}), the Adjusted EBITDA is the key
-    acquisition basis — extract it from the fy3 column with highest precision.
-  Fallback derivation — try these options IN ORDER when direct label match fails:
-
-  Option 1 — EBITDA row present (preferred fallback):
-    adj_ebitda = EBITDA + adjustments
-    (EBITDA row labels: 'EBITDA', 'Earnings Before Interest Tax D&A', 'EBITDA (unadjusted)')
-    Set confidence = 0.80. Cite: "EBITDA row + adjustments"
-
-  Option 2 — Operating income + D&A row both present:
-    adj_ebitda = operating_income + depreciation_and_amortisation + adjustments
-    (D&A row labels: 'Depreciation', 'Amortisation', 'D&A', 'Depreciation & Amortization')
-    Set confidence = 0.75. Cite: "operating_income + D&A + adjustments"
-
-  Option 3 — Operating income only (last resort):
-    adj_ebitda = operating_income + adjustments
-    where operating_income = the EBIT / Operating Income / Operating Profit line
-    WARNING: This formula omits D&A and will understate adj_ebitda.
-    Only use if Options 1 and 2 are both impossible.
-    Set confidence = 0.65. Cite: "operating_income + adjustments (D&A not found)"
-
-  SCAN ALL SECTIONS: When searching for adj_ebitda_fy1 and adj_ebitda_fy2,
-  check not only the main P&L table but also: deal overview, executive
-  summary, financial highlights, investment thesis, and any KPI summary box.
-  These sections often state historical Adj. EBITDA values inline in prose
-  (e.g. "Adjusted EBITDA grew from $8.1M in FY2021 to $9.7M in FY2022").
-  Extract ALL three years wherever found with highest confidence match.
-  Apply derivation fallback only if no direct value found anywhere.
-
-IMPORTANT: Extract adj_ebitda for ALL THREE fiscal years from the same row.
-  The Adjusted EBITDA row appears once in the P&L table with three year columns.
-  Return adj_ebitda_fy1, adj_ebitda_fy2, AND adj_ebitda_fy3 — do not return
-  only the most recent year. Map each year column by header match (not position):
-  fy1 column → adj_ebitda_fy1, fy2 column → adj_ebitda_fy2, fy3 column → adj_ebitda_fy3.
-
-ADJ. EBITDA PROJECTION CONTAMINATION GUARD (critical for multi-year tables):
-  Many CIM P&L tables have MORE than 3 columns — they show historical years AND
-  projection years side by side in the same row, for example:
-    FY2022 | FY2023 | FY2024 | FY2025 | 2026F | 2027F | 2028F
-    or: Dec-22A | Dec-23A | Dec-24A | Dec-25A | Y1 | Y2 | Y3
-  The projection columns (Y1/Y2/Y3, 2026F/2027F/2028F, or any column to the RIGHT
-  of the FY{fy3} / Dec-{yy3}A column) must NEVER be used for adj_ebitda_fy1/fy2/fy3.
-  RULE: adj_ebitda_fyN must come ONLY from the column whose header matches {fy1}/{fy2}/{fy3}
-    (or Dec-{yy1}A / Dec-{yy2}A / Dec-{yy3}A). Stop reading the row at the fy3 column.
-  VERIFICATION: After extracting adj_ebitda_fy3, check that the column you used is
-    the LAST historical column (i.e. no further historical year exists to its right).
-    If the value you found is from a column to the right of fy3 → it is a projection
-    value. Discard it and return null for adj_ebitda_fy3 with confidence 0.0.
-  EXAMPLE 1: Row = [15,044 | 21,632 | 10,918 | 8,581 | 9,324 | 13,624 | 19,395]
-    with headers [FY22 | FY23 | FY24 | FY25 | Y1 | Y2 | Y3] and fy3=2025:
-    → adj_ebitda_fy3 = 8,581 (FY25 column, position 4). NOT 13,624 (Y2, position 6).
-  EXAMPLE 2 ($M document): Row = [-4 | -1 | -21 | 23 | 26 | 32 | 42] (values in $M)
-    with headers [2020A | 2021A | 2022A | 2023E | 2024P | 2025P | 2026P] and fy3=2022:
-    → Reported EBITDA fy3 = -21 × 1000 = -21,000 (2022A column). NOT 23,000 (2023E).
-    → If add-backs for 2022A = 28,000: PF Adj. EBITDA = -21,000 + 28,000 = 7,000.
-    → Do NOT extract 42,000 (2026P) or 23,000 (2023E) as adj_ebitda_fy3.
-
-ADJ. EBITDA CROSS-CHECK (run for every historical year):
-  calc = gross_margin − sga + adjustments
-  If |stated_ebitda − calc| / calc > 0.05:
-    Set confidence = 0.60
-    Append to citation: '[DISCREPANCY: stated={{stated}}, calc={{calc}}, delta={{pct}}%]'
-
-ADJUSTMENTS CROSS-CHECK RULE (apply per fiscal year independently):
-After extracting adjustments_fyN, verify reconciliation with adj_ebitda:
-  expected_adj_ebitda = reported_ebitda_fyN + adjustments_fyN
-
-If both reported_ebitda_fyN and adj_ebitda_fyN are available:
-  implied_adjustments = adj_ebitda_fyN − reported_ebitda_fyN
-  discrepancy_pct = abs(adjustments_fyN − implied_adjustments) / implied_adjustments
-
-If discrepancy_pct > 10%:
-  The extracted adjustments_fyN is likely from the wrong column or row.
-  Preferred action: use implied_adjustments = adj_ebitda_fyN − reported_ebitda_fyN
-  as the adjustments value, with confidence = 0.80 and citation noting:
-  'Adjustments back-derived from Adj.EBITDA − Reported EBITDA (stated value failed
-  reconciliation check)'
-  Only use the stated adjustments row value if reconciliation passes (< 10% gap).
-
-This rule applies to adjustments_fy1, adjustments_fy2, adjustments_fy3 independently.
-If reported_ebitda is null for a given year, skip the cross-check for that year.
-
 ════════════════════════════════════════════════════════════
 SECTION D — PROJECTION EXTRACTION RULES
 ════════════════════════════════════════════════════════════
@@ -1585,7 +1455,7 @@ labelled: Forecast, Projections, Budget, Management Case, Strategic Plan, Outloo
 
 IMPORTANT DISTINCTION — E/F/B/P SUFFIX COLUMNS:
   For HISTORICAL fields (revenue_fy1/fy2/fy3, gross_margin_fy1/2/3, sga_fy1/2/3,
-    interest_expense_fy1/2/3, adjustments_fy1/2/3, adj_ebitda_fy1/2/3):
+    interest_expense_fy1/2/3, adjustments_fy1/2/3):
     DO NOT extract values from columns with E/F/B/P suffix. Those are projection columns.
   For PROJECTION fields (proj_revenue_y1..y5, proj_gross_margin_y1..y5, proj_sga_y1..y5):
     DO extract values from columns with E/F/B/P suffix — these ARE the projection columns.
@@ -1645,10 +1515,8 @@ Before writing your final JSON, verify each item:
   [ ] inventory_collateral: read from its own labeled "Inventory" row — NOT assumed/copied from AR; AR and Inventory may coincidentally match in value, which is OK if each came from its own row
   [ ] collateral year: all collateral values extracted from fy3 / Dec-{yy3}A column — NOT from Dec-{yy1}A or Dec-{yy2}A (older columns)
   [ ] net_revenue_collateral: from "Accounts Receivable" / "AR" / "Trade Receivables" row on BALANCE SHEET — NOT from "Net Revenue" / "Revenue" row on P&L. If no balance sheet → null.
-  [ ] adj_ebitda_fy3: column header matches fy3 year — NOT from any E/F/P/B projection column; cross-check: reported_ebitda + adjustments ≈ adj_ebitda (within 5%)
   [ ] E/F/B/P suffix columns: NOT mapped to historical slots (fy1/fy2/fy3)
   [ ] E/F/B/P suffix columns: ARE correctly mapped to proj_* slots (y1..y5)
-  [ ] adj_ebitda_fy3: from FY{fy3}/Dec-{yy3}A column ONLY — NOT from Y1/Y2/Y3 or any projection column to its right
   [ ] Revenue row label: from ACCEPT list only — NOT from REJECT list (no segments/regions/products)
   [ ] Revenue row: is the TOPMOST data row in the P&L (appears BEFORE COGS / Gross Margin)
   [ ] Revenue values: all positive numbers (negative = wrong row selected)
@@ -1661,9 +1529,7 @@ Before writing your final JSON, verify each item:
   [ ] Consolidated cross-check: extracted revenue >= any individual segment revenue in document
   [ ] building_land_collateral: extracted from a row labeled "Building"/"Land"/"Real Estate" — NOT inferred from being constant or larger than M&E
   [ ] Collateral anti-swap: me_equipment citation references M&E/Equipment/Warehouse Equipment label; building_land citation references Building/Land label — labels must not be swapped
-  [ ] reported_ebitda: extracted from the EBITDA row BEFORE the add-backs section (smaller than adj_ebitda)
-  [ ] adj_ebitda NOT ≈ adjustments: if adj_ebitda ≈ adjustments amount → wrong field, re-extract
-  [ ] adj_ebitda >= reported_ebitda: adjusted must be ≥ base EBITDA (add-backs are always positive)
+  [ ] reported_ebitda: extracted from the EBITDA row BEFORE the add-backs section
   [ ] line_of_credit: revolving credit/ABL balance from most recent balance sheet — null if not found
   [ ] current_lt_debt: current portion of LTD from most recent balance sheet — null if not found
   [ ] sga_fy1/fy2/fy3: read from consolidated P&L only (not segment tables, not COGS rows)
@@ -1773,9 +1639,6 @@ Return ONLY the JSON below. No prose. No markdown. No explanation.
   "adjustments_fy1":          {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "adjustments_fy2":          {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "adjustments_fy3":          {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "adj_ebitda_fy1":           {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "adj_ebitda_fy2":           {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
-  "adj_ebitda_fy3":           {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "net_revenue_collateral":   {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "inventory_collateral":     {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
   "me_equipment_collateral":  {{"value": <num|null>,  "confidence": <0-1>, "citation": "..." }},
@@ -2574,17 +2437,13 @@ DOCUMENT TEXT:
                         f"— possible segment row]"
                     )
 
-    # ── SG&A CONTAMINATION GUARD + CALCULATED FALLBACK ──────────────────────
+    # ── SG&A CONTAMINATION GUARD ─────────────────────────────────────────────
     for _n in (1, 2, 3):
         _sga_key = f'sga_fy{_n}'
         _rev_key = f'revenue_fy{_n}'
-        _gm_key  = f'gross_margin_fy{_n}'
-        _ebi_key = f'adj_ebitda_fy{_n}'
 
         _sga = extracted.get(_sga_key)
         _rev = extracted.get(_rev_key)
-        _gm  = extracted.get(_gm_key)
-        _ebi = extracted.get(_ebi_key)
 
         # Guard 1: reject if SG&A equals or exceeds revenue
         if _sga is not None and _rev is not None and _rev > 0:
@@ -2599,14 +2458,6 @@ DOCUMENT TEXT:
                 logger.warning(f'SGA_GUARD: sga_fy{_n} {_sga} is >{_sga/_rev:.1%} of rev — nulled')
                 _sga = None
                 extracted[_sga_key] = None
-
-        # Calculated fallback: GM - Adj.EBITDA when SG&A is absent
-        if _sga is None and _gm is not None and _ebi is not None:
-            if _gm > 0 and _ebi is not None:
-                _calc = _gm - _ebi
-                if _calc > 0:
-                    logger.info(f'SGA_CALC: sga_fy{_n} derived as GM-EBITDA = {_calc}')
-                    extracted[_sga_key] = _calc
 
         # Final sentinel: ensure key exists (0 = not extracted/not applicable)
         if extracted.get(_sga_key) is None:
@@ -2642,22 +2493,6 @@ DOCUMENT TEXT:
                 )
                 extracted[f'gross_margin_fy{_n}'] = None
 
-    # ── Adj. EBITDA derivation fallback ──────────────────────────────────────
-    # If adj_ebitda_fyN is null after all passes but gross_margin + sga are present,
-    # derive it so the review page shows a value and C26 in Excel is populated.
-    for _n in (1, 2, 3):
-        if extracted.get(f'adj_ebitda_fy{_n}') is None:
-            gm  = extracted.get(f'gross_margin_fy{_n}')
-            sg  = extracted.get(f'sga_fy{_n}')
-            adj = extracted.get(f'adjustments_fy{_n}') or 0.0
-            if gm is not None and sg is not None:
-                derived = round(float(gm) - float(sg) + float(adj), 2)
-                extracted[f'adj_ebitda_fy{_n}'] = derived
-                confidences[f'adj_ebitda_fy{_n}'] = 0.70
-                citations[f'adj_ebitda_fy{_n}'] = (
-                    f"Derived: gross_margin({gm}) - sga({sg}) + adjustments({adj})"
-                )
-                logger.info(f"  Adj.EBITDA fy{_n} derived from P&L: {derived}")
 
     # ── Revenue ≥ Gross Margin accounting guard ───────────────────────────────
     # If gross_margin > revenue for the same year the value is from the wrong row.
@@ -2676,115 +2511,8 @@ DOCUMENT TEXT:
                 f"Nulled: extracted {_gm:,.0f} > revenue {_rev:,.0f} (GM > Revenue impossible)"
             )
 
-    # ── EBITDA cross-check at extraction time ────────────────────────────────
-    # If stated Adj.EBITDA differs >5% from (GM - SGA + adj), downgrade confidence
-    # to 0.60 and append a discrepancy note to citation.
-    # IMPORTANT: Only run when adjustments_fyN is explicitly extracted (not null).
-    # When adjustments is null, calc = GM - SGA (omits add-backs entirely) → the
-    # discrepancy vs stated adj_ebitda (which includes add-backs) is always large
-    # and meaningful, causing false confidence downgrades for companies with add-backs.
-    for _n in (1, 2, 3):
-        doc_ebitda = extracted.get(f'adj_ebitda_fy{_n}')
-        gm  = extracted.get(f'gross_margin_fy{_n}')
-        sg  = extracted.get(f'sga_fy{_n}')
-        adj_raw = extracted.get(f'adjustments_fy{_n}')
-        # Skip cross-check if adjustments is unknown — calc would exclude add-backs
-        # and always look "wrong" vs. the stated adj_ebitda which includes them.
-        if adj_raw is None:
-            continue
-        adj = float(adj_raw)
-        if doc_ebitda is not None and gm is not None and sg is not None:
-            calc = gm - sg + adj
-            if abs(calc) > 0:
-                pct_diff = abs(calc - doc_ebitda) / abs(calc)
-                if pct_diff > 0.05:
-                    confidences[f'adj_ebitda_fy{_n}'] = min(
-                        confidences.get(f'adj_ebitda_fy{_n}', 0.60), 0.60
-                    )
-                    existing = citations.get(f'adj_ebitda_fy{_n}', '')
-                    citations[f'adj_ebitda_fy{_n}'] = (
-                        existing + f" [DISCREPANCY: stated={doc_ebitda:,.0f}, "
-                        f"calculated={calc:,.0f}, delta={pct_diff:.0%}]"
-                    ).strip()
-                    logger.warning(
-                        f"  EBITDA fy{_n} discrepancy: stated={doc_ebitda:,.0f}, "
-                        f"calc={calc:,.0f}, diff={pct_diff:.0%}"
-                    )
 
-    # ── Adj. EBITDA / Adjustments confusion guard ─────────────────────────────
-    # Root cause (Polytek v13): LLM puts adjustment add-back amounts into adj_ebitda slot.
-    # Detection: adj_ebitda ≈ adjustments (within 20%) → likely swapped.
-    # Fix: if reported_ebitda available, derive adj_ebitda = reported + abs(adjustments).
-    for _n in (1, 2, 3):
-        _adj_e  = extracted.get(f'adj_ebitda_fy{_n}')
-        _adj_s  = extracted.get(f'adjustments_fy{_n}')
-        _rep_e  = extracted.get(f'reported_ebitda_fy{_n}')
-        if _adj_e is not None and _adj_s is not None and abs(_adj_s) > 0:
-            _ratio = abs(_adj_e) / abs(_adj_s)
-            if _ratio < 1.20:   # adj_ebitda ≤ 120% of adjustments = swapped
-                if _rep_e is not None and _rep_e > abs(_adj_s):
-                    _corrected = round(float(_rep_e) + abs(float(_adj_s)), 2)
-                    logger.warning(
-                        f"  EBITDA SWAP fy{_n}: adj_ebitda={_adj_e:,.0f} ≈ "
-                        f"adjustments={_adj_s:,.0f} (ratio={_ratio:.2f}) — "
-                        f"correcting: reported({_rep_e:,.0f}) + adj({abs(_adj_s):,.0f}) = {_corrected:,.0f}"
-                    )
-                    extracted[f'adj_ebitda_fy{_n}'] = _corrected
-                    confidences[f'adj_ebitda_fy{_n}'] = 0.75
-                    citations[f'adj_ebitda_fy{_n}'] = (
-                        f"Swap-corrected: reported_ebitda({_rep_e:,.0f}) + "
-                        f"abs(adjustments)({abs(_adj_s):,.0f}) = {_corrected:,.0f} "
-                        f"[original adj_ebitda={_adj_e:,.0f} was ≈ adjustments — confusion fixed]"
-                    )
-                else:
-                    logger.warning(
-                        f"  EBITDA SWAP SUSPECTED fy{_n}: adj_ebitda={_adj_e:,.0f} ≈ "
-                        f"adjustments={_adj_s:,.0f} — no reported_ebitda to auto-correct"
-                    )
-                    confidences[f'adj_ebitda_fy{_n}'] = min(
-                        confidences.get(f'adj_ebitda_fy{_n}', 0.55), 0.55
-                    )
-        # Guard: adj_ebitda must be >= reported_ebitda (add-backs are positive)
-        if _adj_e is not None and _rep_e is not None and _adj_e < _rep_e * 0.90:
-            _fixed = round(float(_rep_e) + abs(float(_adj_s or 0)), 2)
-            logger.warning(
-                f"  EBITDA SIGN fy{_n}: adj_ebitda={_adj_e:,.0f} < "
-                f"reported_ebitda={_rep_e:,.0f} — deriving {_fixed:,.0f}"
-            )
-            extracted[f'adj_ebitda_fy{_n}'] = _fixed
-            confidences[f'adj_ebitda_fy{_n}'] = 0.75
-            citations[f'adj_ebitda_fy{_n}'] = (
-                f"Sign-corrected: adj({_adj_e:,.0f}) < reported({_rep_e:,.0f}) "
-                f"— derived {_fixed:,.0f}"
-            )
 
-    # ── Gross Margin reverse derivation (when EBITDA discrepancy is large) ──────
-    # If the stated adj_ebitda looks correct but the extracted gross_margin produces
-    # a >40% EBITDA gap, the gross_margin row was pulled from the wrong table.
-    # Reverse-derive: gross_margin = adj_ebitda + sga - adjustments.
-    for _n in (1, 2, 3):
-        doc_ebitda = extracted.get(f'adj_ebitda_fy{_n}')
-        gm  = extracted.get(f'gross_margin_fy{_n}')
-        sg  = extracted.get(f'sga_fy{_n}')
-        adj = extracted.get(f'adjustments_fy{_n}') or 0.0
-        if doc_ebitda is not None and gm is not None and sg is not None:
-            calc = gm - sg + adj
-            if abs(calc) > 0:
-                pct_diff = abs(calc - doc_ebitda) / abs(calc)
-                if pct_diff > 0.40:
-                    derived_gm = round(doc_ebitda + sg - adj, 2)
-                    if derived_gm > 0:
-                        extracted[f'gross_margin_fy{_n}'] = derived_gm
-                        confidences[f'gross_margin_fy{_n}'] = 0.70
-                        citations[f'gross_margin_fy{_n}'] = (
-                            f"Reverse-derived: adj_ebitda({doc_ebitda}) + sga({sg})"
-                            f" - adjustments({adj}) = {derived_gm}"
-                            f" [original {gm} discarded — {pct_diff:.0%} EBITDA gap]"
-                        )
-                        logger.info(
-                            f"  GM fy{_n} reverse-derived: {gm} → {derived_gm}"
-                            f" (EBITDA gap was {pct_diff:.0%})"
-                        )
 
     # ── proj_gross_margin invalidation when hist GM was reverse-derived ──────────
     # If any historical gross_margin was corrected by reverse-derivation, all the
@@ -2813,31 +2541,6 @@ DOCUMENT TEXT:
                     f"Nulled: {_pgm:,.0f} >3× corrected hist GM — from same wrong row"
                 )
 
-    # ── HARD GUARD: adj_ebitda_fy3 projection contamination (>200% discrepancy) ──
-    # If reported_ebitda + adjustments gives a VERY different value, the LLM read
-    # from a projection column. Auto-correct to calculated value.
-    _stated_ebitda = extracted.get('adj_ebitda_fy3')
-    _reported_e3 = extracted.get('reported_ebitda_fy3')
-    _adjustments_e3 = extracted.get('adjustments_fy3')
-    if (_stated_ebitda is not None and _reported_e3 is not None
-            and _adjustments_e3 is not None):
-        _calc_ebitda = _reported_e3 + _adjustments_e3
-        if _calc_ebitda != 0 and abs(_stated_ebitda - _calc_ebitda) / abs(_calc_ebitda) > 2.0:
-            _delta_pct = abs(_stated_ebitda - _calc_ebitda) / abs(_calc_ebitda) * 100
-            logger.warning(
-                f"  adj_ebitda_fy3 HARD GUARD: stated={_stated_ebitda:,.0f}, "
-                f"calculated={_calc_ebitda:,.0f}, delta={_delta_pct:.0f}% > 200%"
-                f" — forcing to calculated value (projection contamination)"
-            )
-            extracted['adj_ebitda_fy3'] = _calc_ebitda
-            confidences['adj_ebitda_fy3'] = 0.70
-            existing_cite = citations.get('adj_ebitda_fy3', '')
-            citations['adj_ebitda_fy3'] = (
-                existing_cite + f' [AUTO-CORRECTED: stated {_stated_ebitda:,.0f} was '
-                f'projection contamination; using reported({_reported_e3:,.0f}) + '
-                f'adjustments({_adjustments_e3:,.0f}) = {_calc_ebitda:,.0f}]'
-            ).strip()
-
     # ── GUARD: AR cannot equal revenue_fy3 exactly (P&L confusion) ────────────
     # If LLM returned revenue as AR, null it out — AR is a balance sheet field.
     _ar_val = extracted.get('net_revenue_collateral')
@@ -2855,22 +2558,9 @@ DOCUMENT TEXT:
             existing_cite + ' [NULLED: value identical to revenue_fy3 — likely P&L confusion]'
         ).strip()
 
-    # ── adj_ebitda CONFIDENCE GUARD ──────────────────────────────────────────
-    # adj_ebitda_fy3 drives the Term Loans fallback (adj_ebitda × leverage_multiple).
-    # A wrong fy3 value directly corrupts Sources. Apply strict 0.70 threshold.
-    # adj_ebitda_fy1/fy2 only affect historical display — standard 0.60 threshold applies.
+    # ── Adj. EBITDA forced to zero (extraction disabled) ─────────────────────────
     for _n in (1, 2, 3):
-        _key = f'adj_ebitda_fy{_n}'
-        _threshold = 0.70 if _n == 3 else 0.60  # strict threshold only for fy3
-        if extracted.get(_key) is not None and confidences.get(_key, 0) < _threshold:
-            logger.warning(
-                f"  adj_ebitda_fy{_n} CONFIDENCE GUARD: confidence="
-                f"{confidences.get(_key, 0):.2f} < {_threshold} — nulling uncertain value "
-                f"({extracted[_key]:,.0f})"
-                + ("; calculator will derive from reported+adjustments." if _n == 3 else ".")
-            )
-            extracted[_key] = None
-            confidences[_key] = 0.0
+        extracted[f'adj_ebitda_fy{_n}'] = 0
 
     # ── Data presence flags (used by UI to dim/badge empty historical columns) ─
     for _n in (1, 2, 3):
@@ -2891,7 +2581,7 @@ DOCUMENT TEXT:
             'pass3_triggered': _pass3_triggered,
             'fields_null_after_merge': [
                 k for k in ['revenue_fy1', 'revenue_fy2', 'revenue_fy3',
-                             'gross_margin_fy3', 'adj_ebitda_fy3', 'sga_fy3']
+                             'gross_margin_fy3', 'sga_fy3']
                 if extracted.get(k) is None
             ],
             'revenue_fy1': extracted.get('revenue_fy1'),

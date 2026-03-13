@@ -84,6 +84,8 @@ def validate_extracted_fields(extracted: dict, confidences: dict) -> dict:
     # ENH-2: Adj. EBITDA cross-check — flag if calculated EBITDA differs >5% from document-stated
     for n in (1, 2, 3):
         doc_ebitda = _num(extracted.get(f'adj_ebitda_fy{n}'))
+        if not doc_ebitda:   # skip when adj_ebitda extraction is disabled (= 0)
+            continue
         gm = _num(extracted.get(f'gross_margin_fy{n}'))
         sg = _num(extracted.get(f'sga_fy{n}'))
         adj = _num(extracted.get(f'adjustments_fy{n}')) or 0.0
